@@ -1,0 +1,67 @@
+[35m[1mConsolidate compiler generated dependencies of target gtest[0m
+[  1%] Built target lexy_file
+[  3%] Built target gtest_main
+[  4%] Built target gtest
+[  6%] Built target minitrace
+[35m[1mConsolidate compiler generated dependencies of target behaviortree_cpp[0m
+[ 36%] Built target behaviortree_cpp
+[35m[1mConsolidate compiler generated dependencies of target bt_sample_nodes[0m
+[35m[1mConsolidate compiler generated dependencies of target crossdoor_nodes_dyn[0m
+[35m[1mConsolidate compiler generated dependencies of target movebase_node_dyn[0m
+[35m[1mConsolidate compiler generated dependencies of target bt4_plugin_manifest[0m
+[35m[1mConsolidate compiler generated dependencies of target dummy_nodes_dyn[0m
+[35m[1mConsolidate compiler generated dependencies of target t01_first_tree_dynamic[0m
+[ 37%] Built target movebase_node_dyn
+[ 40%] Built target crossdoor_nodes_dyn
+[ 41%] Built target bt_sample_nodes
+[ 43%] Built target bt4_plugin_manifest
+[ 45%] Built target t01_first_tree_dynamic
+[ 46%] Built target dummy_nodes_dyn
+[35m[1mConsolidate compiler generated dependencies of target test_plugin_action[0m
+[35m[1mConsolidate compiler generated dependencies of target test_plugin_executor[0m
+[35m[1mConsolidate compiler generated dependencies of target t03_generic_ports[0m
+[35m[1mConsolidate compiler generated dependencies of target t02_basic_ports[0m
+[35m[1mConsolidate compiler generated dependencies of target behaviortree_cpp_test[0m
+[35m[1mConsolidate compiler generated dependencies of target t01_first_tree_static[0m
+[ 47%] Built target test_plugin_action
+[ 50%] Built target test_plugin_executor
+[ 50%] Built target t02_basic_ports
+[ 52%] Built target t03_generic_ports
+[ 53%] Built target t01_first_tree_static
+[35m[1mConsolidate compiler generated dependencies of target t04_reactive_sequence[0m
+[35m[1mConsolidate compiler generated dependencies of target t05_crossdoor[0m
+[35m[1mConsolidate compiler generated dependencies of target t08_additional_node_args[0m
+[35m[1mConsolidate compiler generated dependencies of target t07_load_multiple_xml[0m
+[35m[1mConsolidate compiler generated dependencies of target t06_subtree_port_remapping[0m
+[ 56%] Built target t07_load_multiple_xml
+[ 59%] Built target t05_crossdoor
+[ 60%] Built target t04_reactive_sequence
+[ 61%] Built target t06_subtree_port_remapping
+[ 66%] Built target t08_additional_node_args
+[ 80%] Built target behaviortree_cpp_test
+[35m[1mConsolidate compiler generated dependencies of target t10_observer[0m
+[35m[1mConsolidate compiler generated dependencies of target t11_groot_howto[0m
+[35m[1mConsolidate compiler generated dependencies of target t14_subtree_model[0m
+[35m[1mConsolidate compiler generated dependencies of target t09_scripting[0m
+[35m[1mConsolidate compiler generated dependencies of target t13_access_by_ref[0m
+[35m[1mConsolidate compiler generated dependencies of target t12_default_ports[0m
+[ 82%] Built target t14_subtree_model
+[ 83%] Built target t10_observer
+[ 84%] Built target t11_groot_howto
+[ 86%] Built target t09_scripting
+[ 88%] Built target t12_default_ports
+[ 89%] Built target t13_access_by_ref
+[35m[1mConsolidate compiler generated dependencies of target t16_global_blackboard[0m
+[35m[1mConsolidate compiler generated dependencies of target t17_blackboard_backup[0m
+[35m[1mConsolidate compiler generated dependencies of target t18_waypoints[0m
+[35m[1mConsolidate compiler generated dependencies of target ex01_wrap_legacy[0m
+[35m[1mConsolidate compiler generated dependencies of target t15_nodes_mocking[0m
+[35m[1mConsolidate compiler generated dependencies of target ex02_runtime_ports[0m
+[ 93%] Built target ex01_wrap_legacy
+[ 93%] Built target t16_global_blackboard
+[ 95%] Built target t18_waypoints
+[ 96%] Built target t17_blackboard_backup
+[ 97%] Built target t15_nodes_mocking
+[ 98%] Built target ex02_runtime_ports
+[35m[1mConsolidate compiler generated dependencies of target ex03_sqlite_log[0m
+[100%] Built target ex03_sqlite_log

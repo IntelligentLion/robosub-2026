@@ -3,6 +3,8 @@ file(REMOVE_RECURSE
   "CMakeFiles/bt_runner.dir/main.cpp.o.d"
   "CMakeFiles/bt_runner.dir/nodes/detect_object.cpp.o"
   "CMakeFiles/bt_runner.dir/nodes/detect_object.cpp.o.d"
+  "CMakeFiles/bt_runner.dir/nodes/move_forward.cpp.o"
+  "CMakeFiles/bt_runner.dir/nodes/move_forward.cpp.o.d"
   "CMakeFiles/bt_runner.dir/nodes/move_to.cpp.o"
   "CMakeFiles/bt_runner.dir/nodes/move_to.cpp.o.d"
   "CMakeFiles/bt_runner.dir/nodes/rotate.cpp.o"

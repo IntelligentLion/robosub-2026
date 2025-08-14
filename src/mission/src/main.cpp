@@ -9,17 +9,23 @@
 #include "/home/yirehban/ros2_ws/src/mission/include/mission/rotate.hpp"
 #include "/home/yirehban/ros2_ws/src/mission/include/mission/move_to.hpp"
 #include "/home/yirehban/ros2_ws/src/mission/include/mission/detect_object.hpp"
+#include <memory>
+#include <mutex>
+#include <typeinfo>
+#include <cxxabi.h> // for abi::__cxa_demangle
+#include <cstdlib>   // For std::free
+
 
 
 using namespace std;
 using namespace std::chrono_literals;
-
 
 // This node gets the information from detector.py and transfers it over to the rest 
 // (acts as a vessel that extracts information, we need to pass it onto the next node as it keeps getting updated)
 
 // Variable definitions
 string detections;
+
 
 class DetectionNodeConfig : public rclcpp::Node
 {
@@ -35,7 +41,7 @@ public:
     void callback(const std_msgs::msg::String::SharedPtr sub_msg)
     {
         blackboard_ -> set("detections", sub_msg->data);  // Set the detections in the blackboard
-        cout << sub_msg->data << endl;  // Print the detections received from the detector.py
+        //cout << sub_msg->data << endl;  // Print the detections received from the detector.py
     }
 
 
@@ -45,42 +51,78 @@ private:
 };
 
 
+class PublishInfo : public rclcpp::Node
+{
+public: 
+    PublishInfo() : Node("publish_info")
+    {
+        pub_ = this->create_publisher<std_msgs::msg::String>("movement_info", 10);
+    }
+
+    void publish(string message) 
+    {
+        auto info = std_msgs::msg::String();
+        info.data = message; 
+        pub_->publish(info);
+
+    }
+
+private: 
+    rclcpp::Publisher<std_msgs::msg::String>::SharedPtr pub_;
+
+};
+
+class SubscribeInfo : public rclcpp::Node
+{
+public:
+    SubscribeInfo() : Node("subscribe_info")
+
+    {
+        sub_ = this->create_subscription<std_msgs::msg::String>("movement_status", 10,
+                std::bind(&SubscribeInfo::sub_callback, this, std::placeholders::_1));
+            
+    }
+
+    void sub_callback(const std_msgs::msg::String::SharedPtr msg)
+    {
+        
+    
+    }
+
+private:
+    rclcpp::Subscription<std_msgs::msg::String>::SharedPtr sub_;
+    BT::Blackboard::Ptr blackboard_second;
+};
+
+
 // Submerge (Action Node)
 class Submerge : public BT::SyncActionNode 
 {
 public: 
-    explicit Submerge(const std::string &name, const BT::NodeConfig &config)
-     : BT::SyncActionNode(name, config)
+    explicit Submerge(const std::string &name) : BT::SyncActionNode(name, {})
     {
+ 
     }
 
-    static BT::PortsList providedPorts()
-    {
-        return { BT::InputPort<string>("detections") };
-    }
-
-    BT::NodeStatus tick() override {
+    BT::NodeStatus tick() override { 
+        cout << "Submerge" << endl;
         auto res = getInput<std::string>("detections");
-        if (res = "0")
-        {
-            cout << "Sawfish detected" << endl; 
-            return BT::NodeStatus::SUCCESS;
-        }
-        if (res = "1")
-        {
-            cout << "Reefshark detected" << endl; 
-            return BT::NodeStatus::SUCCESS;
-        }
-        if (res = "No detections")
-        {
-            cout << "You're a bum" << endl; 
-            return BT::NodeStatus::FAILURE;
+        
+        nonstd::expected<std::string, std::string> success_expected = res;
+        nonstd::expected<std::string, std::string> failure_expected = nonstd::make_unexpected("An error occurred!");
+        if (success_expected.has_value()) {
+        std::string result_string = success_expected.value();
+        std::cout << "Success result: " << result_string << std::endl;
+        } else {
+        // This block will not be executed for success_expected
+        std::string error_string = success_expected.error();
+        std::cout << "Error for success_expected: " << error_string << std::endl;
         }
         return BT::NodeStatus::SUCCESS;
         
     }
 };
- 
+
 // Center_sub_perpendicular_to_gate (Action Node)
 class Center_sub_perpendicular_to_gate : public BT::SyncActionNode
 {
@@ -109,7 +151,7 @@ public:
     BT::NodeStatus tick() override
     {
         std::this_thread::sleep_for(3s);
-        cout << "Turn_right_90_deg" << endl; 
+        cout << "Turn_right_90_deg" << endl;
         return BT::NodeStatus::SUCCESS;
     }
 };
@@ -133,7 +175,7 @@ public:
     BT::NodeStatus tick() override
     {
         std::this_thread::sleep_for(3s);
-        cout << "Turn_right_until_parallel_with_Path_and_facing_away_from_the_end" << endl; 
+        cout << "Turn_right_until_parallel_with_Path_and_facing_away_from_the_end" << endl;
         return BT::NodeStatus::SUCCESS;
     }
 };
@@ -149,7 +191,7 @@ public:
     BT::NodeStatus tick() override
     {
         std::this_thread::sleep_for(3s);
-        cout << "Reposition_sub_to_gate_left_entrance" << endl; 
+        cout << "Reposition_sub_to_gate_left_entrance" << endl;
         return BT::NodeStatus::SUCCESS;
     }
 };
@@ -165,7 +207,7 @@ public:
     BT::NodeStatus tick() override
     {
         std::this_thread::sleep_for(3s);
-        cout << "Reposition_sub_to_gate_right_entrance" << endl; 
+        cout << "Reposition_sub_to_gate_right_entrance" << endl;
         return BT::NodeStatus::SUCCESS;
     }
 };
@@ -187,7 +229,7 @@ public:
     BT::NodeStatus tick() override
     {
         std::this_thread::sleep_for(3s);
-        cout << "Set_preferred_side_to_L" << endl; 
+        cout << "Set_preferred_side_to_L" << endl;
         return BT::NodeStatus::SUCCESS;
     }
 };
@@ -209,7 +251,7 @@ public:
     BT::NodeStatus tick() override
     {
         std::this_thread::sleep_for(3s);
-        cout << "Set_preferred_side_to_R" << endl; 
+        cout << "Set_preferred_side_to_R" << endl;
         return BT::NodeStatus::SUCCESS;
     }
 };
@@ -231,7 +273,7 @@ public:
     BT::NodeStatus tick() override
     {
         std::this_thread::sleep_for(3s);
-        cout << "Detect_preferred_animal_left_of_center" << endl; 
+        cout << "Detect_preferred_animal_left_of_center" << endl;
         return BT::NodeStatus::SUCCESS;
     }
 };
@@ -247,7 +289,7 @@ public:
     BT::NodeStatus tick() override
     {
         std::this_thread::sleep_for(3s);
-        cout << "Move_with_style_through_gate" << endl; 
+        cout << "Move_with_style_through_gate" << endl;
         return BT::NodeStatus::SUCCESS;
     }
 };
@@ -263,7 +305,7 @@ public:
     BT::NodeStatus tick() override
     {
         std::this_thread::sleep_for(3s);
-        cout << "Move_in_the_most_boring_way_possible_through_the_gate" << endl; 
+        cout << "Move_in_the_most_boring_way_possible_through_the_gate" << endl;
         return BT::NodeStatus::SUCCESS;
     }
 };
@@ -279,7 +321,7 @@ public:
     BT::NodeStatus tick() override
     {
         std::this_thread::sleep_for(3s);
-        cout << "Move_until_the_other_end_of_the_path" << endl; 
+        cout << "Move_until_the_other_end_of_the_path" << endl;
         return BT::NodeStatus::SUCCESS;
     }
 };
@@ -288,12 +330,7 @@ public:
 BT::NodeStatus preferred_side_is_L(BT::TreeNode &self) 
 {
     auto side = self.getInput<std::string>("preferred_side");
-    if (side.value() == "L")
-    {
-        cout << "Preferred Side is L" << endl; 
-        return BT::NodeStatus::SUCCESS;
-    }
-    cout << "Preferred Side is NOT L" << endl; 
+    cout << "preferred_side_is_L: " << endl;
     return BT::NodeStatus::FAILURE;
 }
 
@@ -325,7 +362,7 @@ public:
     BT::NodeStatus tick() override
     {
         std::this_thread::sleep_for(3s);
-        cout << "Move_past_PVC_posts" << endl; 
+        cout << "Move_past_PVC_posts" << endl;
         return BT::NodeStatus::SUCCESS;
     }
 };
@@ -357,7 +394,7 @@ public:
     BT::NodeStatus tick() override
     {
         std::this_thread::sleep_for(3s);
-        cout << "Move_sub_until_aligned_with_preferred_animal_on_bin" << endl; 
+        cout << "Move_sub_until_aligned_with_preferred_animal_on_bin" << endl;
         return BT::NodeStatus::SUCCESS;
     }
 };
@@ -461,7 +498,7 @@ public:
     BT::NodeStatus tick() override
     {
         std::this_thread::sleep_for(3s);
-        cout << "Grab_trash_with_claw" << endl; 
+        cout << "Grab_trash_with_claw" << endl;
         return BT::NodeStatus::SUCCESS;
     }
 };
@@ -493,7 +530,7 @@ public:
     BT::NodeStatus tick() override
     {
         std::this_thread::sleep_for(3s);
-        cout << "Move_and_place_trash_in_corresponding_basket" << endl; 
+        cout << "Move_and_place_trash_in_corresponding_basket" << endl;
         return BT::NodeStatus::SUCCESS;
     }
 };
@@ -525,7 +562,7 @@ public:
     BT::NodeStatus tick() override
     {
         std::this_thread::sleep_for(3s);
-        cout << "Move_to_depth_taken_for_Navigating_the_Channel" << endl; 
+        cout << "Move_to_depth_taken_for_Navigating_the_Channel" << endl;
         return BT::NodeStatus::SUCCESS;
     }
 };
@@ -541,7 +578,7 @@ public:
     BT::NodeStatus tick() override
     {
         std::this_thread::sleep_for(3s);
-        cout << "Turn_right_180_deg" << endl; 
+        cout << "Turn_right_180_deg" << endl;
         return BT::NodeStatus::SUCCESS;
     }
 };
@@ -636,6 +673,12 @@ int main(int argc, char **argv)
     auto mission = std::make_shared<DetectionNodeConfig>(blackboard);
     std::thread ros_spin_thread([&]() { rclcpp::spin(mission); });
 
+    auto movement_info_node = std::make_shared<PublishInfo>();
+    std::thread ros_spin_thread2([&]() { rclcpp::spin(movement_info_node); });
+
+    //auto movement_status_node = std::make_shared<SubscribeInfo>();
+    //std::thread ros_spin_thread3([&]() { rclcpp::spin(movement_status_node); });
+
     // Create the main tree
     auto main_tree = factory.createTree("SHRUB (Software for Handling and Regulating Underwater Behavior)", blackboard);
 
@@ -646,6 +689,9 @@ int main(int argc, char **argv)
         rclcpp::shutdown();
     }
     ros_spin_thread.join();
+    ros_spin_thread2.join();
+    //ros_spin_thread3.join();
+
 
     return 0;
     

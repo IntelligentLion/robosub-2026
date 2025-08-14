@@ -1,0 +1,51 @@
+[0.000000] (-) TimerEvent: {}
+[0.000921] (-) JobUnselected: {'identifier': 'auv_msgs'}
+[0.001040] (-) JobUnselected: {'identifier': 'behaviortree_cpp'}
+[0.001114] (-) JobUnselected: {'identifier': 'control'}
+[0.001179] (-) JobUnselected: {'identifier': 'examples_rclcpp_async_client'}
+[0.001242] (-) JobUnselected: {'identifier': 'examples_rclcpp_cbg_executor'}
+[0.001302] (-) JobUnselected: {'identifier': 'examples_rclcpp_minimal_action_client'}
+[0.001361] (-) JobUnselected: {'identifier': 'examples_rclcpp_minimal_action_server'}
+[0.001418] (-) JobUnselected: {'identifier': 'examples_rclcpp_minimal_client'}
+[0.001475] (-) JobUnselected: {'identifier': 'examples_rclcpp_minimal_composition'}
+[0.001533] (-) JobUnselected: {'identifier': 'examples_rclcpp_minimal_publisher'}
+[0.001592] (-) JobUnselected: {'identifier': 'examples_rclcpp_minimal_service'}
+[0.001649] (-) JobUnselected: {'identifier': 'examples_rclcpp_minimal_subscriber'}
+[0.001704] (-) JobUnselected: {'identifier': 'examples_rclcpp_minimal_timer'}
+[0.001760] (-) JobUnselected: {'identifier': 'examples_rclcpp_multithreaded_executor'}
+[0.001817] (-) JobUnselected: {'identifier': 'examples_rclcpp_wait_set'}
+[0.001875] (-) JobUnselected: {'identifier': 'examples_rclpy_executors'}
+[0.001935] (-) JobUnselected: {'identifier': 'examples_rclpy_guard_conditions'}
+[0.001993] (-) JobUnselected: {'identifier': 'examples_rclpy_minimal_action_client'}
+[0.002052] (-) JobUnselected: {'identifier': 'examples_rclpy_minimal_action_server'}
+[0.002103] (-) JobUnselected: {'identifier': 'examples_rclpy_minimal_client'}
+[0.002163] (-) JobUnselected: {'identifier': 'examples_rclpy_minimal_publisher'}
+[0.002213] (-) JobUnselected: {'identifier': 'examples_rclpy_minimal_service'}
+[0.002258] (-) JobUnselected: {'identifier': 'examples_rclpy_minimal_subscriber'}
+[0.002413] (-) JobUnselected: {'identifier': 'examples_rclpy_pointcloud_publisher'}
+[0.002481] (-) JobUnselected: {'identifier': 'launch_testing_examples'}
+[0.002516] (-) JobUnselected: {'identifier': 'localization'}
+[0.002551] (-) JobUnselected: {'identifier': 'mavlink_thruster_control'}
+[0.002607] (-) JobUnselected: {'identifier': 'rviz_plugin_zed_od'}
+[0.002643] (-) JobUnselected: {'identifier': 'test'}
+[0.002691] (-) JobUnselected: {'identifier': 'vision'}
+[0.002825] (-) JobUnselected: {'identifier': 'zed_aruco_localization'}
+[0.002886] (-) JobUnselected: {'identifier': 'zed_components'}
+[0.002951] (-) JobUnselected: {'identifier': 'zed_depth_to_laserscan'}
+[0.002999] (-) JobUnselected: {'identifier': 'zed_display_rviz2'}
+[0.003034] (-) JobUnselected: {'identifier': 'zed_ipc'}
+[0.003063] (-) JobUnselected: {'identifier': 'zed_multi_camera'}
+[0.003119] (-) JobUnselected: {'identifier': 'zed_rgb_convert'}
+[0.003169] (-) JobUnselected: {'identifier': 'zed_robot_integration'}
+[0.003209] (-) JobUnselected: {'identifier': 'zed_ros2'}
+[0.003257] (-) JobUnselected: {'identifier': 'zed_topic_benchmark'}
+[0.003362] (-) JobUnselected: {'identifier': 'zed_topic_benchmark_component'}
+[0.003418] (-) JobUnselected: {'identifier': 'zed_topic_benchmark_interfaces'}
+[0.003456] (-) JobUnselected: {'identifier': 'zed_tutorial_depth'}
+[0.003501] (-) JobUnselected: {'identifier': 'zed_tutorial_pos_tracking'}
+[0.003540] (-) JobUnselected: {'identifier': 'zed_tutorial_video'}
+[0.003573] (-) JobUnselected: {'identifier': 'zed_wrapper'}
+[0.003692] (mission) JobQueued: {'identifier': 'mission', 'dependencies': OrderedDict([('behaviortree_cpp', '/home/yirehban/ros2_ws/install/behaviortree_cpp')])}
+[0.003760] (mission) JobStarted: {'identifier': 'mission'}
+[0.017274] (mission) JobEnded: {'identifier': 'mission', 'rc': 1}
+[0.028247] (-) EventReactorShutdown: {}

@@ -258,6 +258,30 @@ nodes/detect_object.cpp.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/bt_runner.dir/build.make CMakeFiles/bt_runner.dir/nodes/detect_object.cpp.s
 .PHONY : nodes/detect_object.cpp.s
 
+nodes/move_forward.o: nodes/move_forward.cpp.o
+.PHONY : nodes/move_forward.o
+
+# target to build an object file
+nodes/move_forward.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/bt_runner.dir/build.make CMakeFiles/bt_runner.dir/nodes/move_forward.cpp.o
+.PHONY : nodes/move_forward.cpp.o
+
+nodes/move_forward.i: nodes/move_forward.cpp.i
+.PHONY : nodes/move_forward.i
+
+# target to preprocess a source file
+nodes/move_forward.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/bt_runner.dir/build.make CMakeFiles/bt_runner.dir/nodes/move_forward.cpp.i
+.PHONY : nodes/move_forward.cpp.i
+
+nodes/move_forward.s: nodes/move_forward.cpp.s
+.PHONY : nodes/move_forward.s
+
+# target to generate assembly for a file
+nodes/move_forward.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/bt_runner.dir/build.make CMakeFiles/bt_runner.dir/nodes/move_forward.cpp.s
+.PHONY : nodes/move_forward.cpp.s
+
 nodes/move_to.o: nodes/move_to.cpp.o
 .PHONY : nodes/move_to.o
 
@@ -328,6 +352,9 @@ help:
 	@echo "... nodes/detect_object.o"
 	@echo "... nodes/detect_object.i"
 	@echo "... nodes/detect_object.s"
+	@echo "... nodes/move_forward.o"
+	@echo "... nodes/move_forward.i"
+	@echo "... nodes/move_forward.s"
 	@echo "... nodes/move_to.o"
 	@echo "... nodes/move_to.i"
 	@echo "... nodes/move_to.s"
