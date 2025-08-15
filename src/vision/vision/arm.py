@@ -26,7 +26,7 @@ print("manual thrust")
 print("submerging")
 for i in range(50):
     master.mav.manual_control_send(
-        master.target.system, 
+        master.target_system, 
         x=0, 
         y=0, 
         z=700, 
@@ -38,7 +38,7 @@ print("submerged")
 
 
 print("running")
-for i in range(100):
+for i in range(10):
     master.mav.manual_control_send(
         master.target_system,
         x=1000,     # Forward (0 to -1000 is backwards) (0 to 1000 is forward)

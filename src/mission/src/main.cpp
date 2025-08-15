@@ -107,17 +107,8 @@ public:
     BT::NodeStatus tick() override { 
         cout << "Submerge" << endl;
         auto res = getInput<std::string>("detections");
-        
-        nonstd::expected<std::string, std::string> success_expected = res;
-        nonstd::expected<std::string, std::string> failure_expected = nonstd::make_unexpected("An error occurred!");
-        if (success_expected.has_value()) {
-        std::string result_string = success_expected.value();
-        std::cout << "Success result: " << result_string << std::endl;
-        } else {
-        // This block will not be executed for success_expected
-        std::string error_string = success_expected.error();
-        std::cout << "Error for success_expected: " << error_string << std::endl;
-        }
+        auto node = PublishInfo(); 
+        node.publish("Submerge");
         return BT::NodeStatus::SUCCESS;
         
     }

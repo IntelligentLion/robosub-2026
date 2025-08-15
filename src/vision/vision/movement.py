@@ -2,9 +2,13 @@ from pymavlink import mavutil
 import time
 
 import rclpy
+from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.node import Node
 from std_msgs.msg import String
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+from rclpy.executors import MultiThreadedExecutor
+
+
 
 """ 
 master = mavutil.mavlink_connection('/dev/ttyACM0', baud=115200)
@@ -28,7 +32,9 @@ class MovementSubscriber(Node):
     def __init__(self):
         super().__init__('movement_subscriber')
         self.latest_info = None
-        self.subscriber = self.create_subscription(String, 'movement_info', self.sub_callback, 10)
+        self.cb = ReentrantCallbackGroup()
+        self.subscriber = self.create_subscription(String, 'movement_info', self.sub_callback, 10, callback_group=self.cb)
+
 
     def sub_callback(self, msg):
         self.latest_info = msg.data
@@ -40,17 +46,15 @@ class MovementSubscriber(Node):
         else: 
             print("No data received yet.")
 
-""" 
+ 
 class MovementPublisher(Node): 
     def __init__(self):
         super().__init__('movement_publisher')
         self.publisher = self.create_publisher(String, 'movement_status', 10)
     
     def publish_detection(self, str):
-        msg = String()
-        msg.data = str
-        self.publisher.publish(msg)
-        self.get_logger().info(f'Published: {(msg.data)}')
+        self.publisher.publish(str)
+        self.get_logger().info(f'Published: {(str)}')
 
 def process_info(subscriber_node, publisher_node):
     info = subscriber_node.get_latest_info()
@@ -62,17 +66,29 @@ def process_info(subscriber_node, publisher_node):
     else:
         print("No info received yet.")
 
-    """
+    
 
 
 if __name__ == "__main__":
     rclpy.init()
-    node1 = MovementSubscriber()
+    node = MovementSubscriber()
+    executor = MultiThreadedExecutor()
+    executor.add_node(node)
+    
    #node2 = MovementPublisher()
     import threading 
-    spin_thread1 = threading.Thread(target=rclpy.spin, args=(node1,), daemon=True)
+    #spin_thread1 = threading.Thread(target=rclpy.spin, args=(node,), daemon=True)
+
     #spin_thread2 = threading.Thread(target=rclpy.spin, args=(node2,), daemon=True)
-    spin_thread1.start()
+    try:
+        executor.spin()  # spin forever
+    except KeyboardInterrupt:
+        node.get_logger().info("Ctrl+C received. Exiting spin.")
+    except Exception as e:
+        node.get_logger().error(f"Unhandled exception: {e}")
+    finally:
+        if rclpy.ok():
+            rclpy.shutdown()
    # spin_thread2.start()
 
     #import time 
