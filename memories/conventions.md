@@ -1,0 +1,1 @@
+- 2026-04-17: For ZED samples with spaces in folder names, use shell escaping (`depth\ sensing`) or quotes in terminal commands.

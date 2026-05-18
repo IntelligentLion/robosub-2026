@@ -1,0 +1,3 @@
+builtin_interfaces/Time stamp
+float32 sub_depth_m
+float32 stop_distance_m

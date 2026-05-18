@@ -25,8 +25,8 @@ import numpy as np
 
 import pyzed.sl as sl
 
-import ogl_viewer.viewer as gl
-import cv_viewer.tracking_viewer as cv_viewer
+from vision.ogl_viewer import viewer as gl
+from vision.cv_viewer import tracking_viewer as cv_viewer
 
 
 def __main(opt: argparse.Namespace):
@@ -40,7 +40,7 @@ def __main(opt: argparse.Namespace):
     # Create a InitParameters object and set configuration parameters
     init_params = sl.InitParameters(input_t=input_type, svo_real_time_mode=True)
     init_params.coordinate_units = sl.UNIT.METER
-    init_params.depth_mode = sl.DEPTH_MODE.NEURAL
+    init_params.depth_mode = sl.DEPTH_MODE.PERFORMANCE
     init_params.coordinate_system = sl.COORDINATE_SYSTEM.RIGHT_HANDED_Y_UP
     init_params.depth_maximum_distance = 50
     is_playback = opt.svo is not None and len(opt.svo) > 0 # Defines if an SVO is used
@@ -178,7 +178,7 @@ def __printHelp():
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--custom_onnx', type=str, required=True, help='/home/yirehban/Downloads/model-1-yolov8n.onnx')
+    parser.add_argument('--custom_onnx', type=str, required=True, help='model-1-yolov8n.onnx')
     parser.add_argument('--svo', type=str, default=None, help='optional svo file, if not passed, use the plugged camera instead')
     parser.add_argument('--disable_gui', action = 'store_true', help='Flag to disable the GUI to increase detection performances. On low-end hardware such as Jetson Nano, the GUI significantly slows down the detection and increase the memory consumption')
     opt = parser.parse_args()

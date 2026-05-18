@@ -1,1 +1,1 @@
-ament_cmake_symlink_install_targets("TARGET_FILES" "/home/yirehban/ros2_ws/build/mission/bt_runner" "TARGETS" "bt_runner" "DESTINATION" "lib/mission")
+ament_cmake_symlink_install_targets("TARGET_FILES" "/home/robosub/UPDATEDCODE/build/mission/bt_runner" "/home/robosub/UPDATEDCODE/build/mission/command_adapter" "TARGETS" "bt_runner" "command_adapter" "DESTINATION" "lib/mission")

@@ -1,49 +1,362 @@
 #!/usr/bin/env python3
 
+import os
 import sys
+import gc
 import numpy as np
 import argparse
-import torch
 import cv2
 import pyzed.sl as sl
-from ultralytics import YOLO
 
-from threading import Lock, Thread
+from threading import Event, Lock, Thread
 from time import sleep
 
-import ogl_viewer.viewer as gl
-import cv_viewer.tracking_viewer as cv_viewer
+from vision.cv_viewer import tracking_viewer as cv_viewer
 
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import String
+from geometry_msgs.msg import Point
+from std_msgs.msg import Float32
+from auv_msgs.msg import ObjectDetection, ObjectDetectionArray
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  ONNX detector (CPU fallback)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class _OnnxBox:
+    __slots__ = ('xywh', 'cls', 'conf')
+    def __init__(self, xywh: np.ndarray, cls: np.ndarray, conf: np.ndarray):
+        self.xywh = xywh
+        self.cls  = cls
+        self.conf = conf
+
+
+class OnnxDetector:
+    def __init__(self, onnx_path: str, class_names=None):
+        import onnxruntime as ort
+        so = ort.SessionOptions()
+        so.log_severity_level = 3
+        so.intra_op_num_threads = 2
+        so.inter_op_num_threads = 1
+        self.session = ort.InferenceSession(
+            onnx_path, sess_options=so,
+            providers=['CPUExecutionProvider'],
+        )
+
+        inp = self.session.get_inputs()[0]
+        self.input_name = inp.name
+        shape = inp.shape
+        self.input_h = int(shape[2]) if len(shape) >= 4 else 640
+        self.input_w = int(shape[3]) if len(shape) >= 4 else 640
+
+        out_shape = self.session.get_outputs()[0].shape
+        nc = max(int(out_shape[1]) - 4, 1) if len(out_shape) == 3 else 1
+
+        if class_names is not None:
+            self.names = ({i: n for i, n in enumerate(class_names)}
+                          if isinstance(class_names, list) else class_names)
+        else:
+            self.names = self._read_onnx_names(onnx_path, nc)
+
+        self._blob = np.empty((1, 3, self.input_h, self.input_w), dtype=np.float32)
+        print(f'[OnnxDetector] Loaded {onnx_path}')
+        print(f'[OnnxDetector] Input: {self.input_h}x{self.input_w}  Classes: {list(self.names.values())}')
+
+    @staticmethod
+    def _read_onnx_names(onnx_path: str, nc: int) -> dict:
+        try:
+            import onnx, ast
+            model_proto = onnx.load(onnx_path)
+            for prop in model_proto.metadata_props:
+                if prop.key == 'names':
+                    names = ast.literal_eval(prop.value)
+                    if isinstance(names, dict):
+                        return {int(k): v for k, v in names.items()}
+                    if isinstance(names, list):
+                        return {i: n for i, n in enumerate(names)}
+        except Exception:
+            pass
+        return {i: f'class_{i}' for i in range(nc)}
+
+    def predict(self, img, imgsz=640, conf=0.4, iou=0.45, device='cuda'):
+        orig_h, orig_w = img.shape[:2]
+        self._preprocess(img)
+        raw = self.session.run(None, {self.input_name: self._blob})[0]
+        boxes, cls_ids, confs = _parse_yolo(raw, conf)
+        if len(boxes) == 0:
+            return [_EmptyResult()]
+
+        sx = orig_w / self.input_w
+        sy = orig_h / self.input_h
+        boxes[:, 0] *= sx
+        boxes[:, 1] *= sy
+        boxes[:, 2] *= sx
+        boxes[:, 3] *= sy
+
+        keep = _nms(boxes, confs, iou)
+        return [_OnnxResult([
+            _OnnxBox(boxes[i:i+1], cls_ids[i:i+1].astype(np.float32), confs[i:i+1])
+            for i in keep
+        ])]
+
+    def _preprocess(self, img: np.ndarray):
+        resized = cv2.resize(img, (self.input_w, self.input_h))
+        blob = resized.astype(np.float32, copy=False)
+        blob *= (1.0 / 255.0)
+        np.copyto(self._blob, blob.transpose(2, 0, 1)[np.newaxis])
+
+
+class _OnnxResult:
+    __slots__ = ('_boxes',)
+    def __init__(self, boxes):
+        self._boxes = boxes
+    @property
+    def boxes(self):
+        return self._boxes
+    def cpu(self):
+        return self
+    def numpy(self):
+        return self
+
+
+class _EmptyResult:
+    @property
+    def boxes(self):
+        return []
+    def cpu(self):
+        return self
+    def numpy(self):
+        return self
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  TensorRT detector (GPU, FP16)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TensorRTDetector:
+    def __init__(self, onnx_path: str, class_names=None):
+        import tensorrt as trt
+        import torch
+
+        engine_path = onnx_path.replace('.onnx', '.engine')
+        logger = trt.Logger(trt.Logger.WARNING)
+
+        if not os.path.exists(engine_path):
+            print(f'[TensorRTDetector] Building FP16 engine from {os.path.basename(onnx_path)} '
+                  f'(one-time, ~2-5 min)...')
+            builder = trt.Builder(logger)
+            network = builder.create_network(
+                1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
+            )
+            parser = trt.OnnxParser(network, logger)
+            with open(onnx_path, 'rb') as f:
+                if not parser.parse(f.read()):
+                    for i in range(parser.num_errors):
+                        print(parser.get_error(i))
+                    raise RuntimeError('TRT: failed to parse ONNX model')
+            config = builder.create_builder_config()
+            # 256MB workspace — enough for a 416-input YOLO, safe on 7.4GB shared Jetson
+            config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 1 << 28)
+            if builder.platform_has_fast_fp16:
+                config.set_flag(trt.BuilderFlag.FP16)
+                print('[TensorRTDetector] FP16 enabled')
+            serialized = builder.build_serialized_network(network, config)
+            if serialized is None:
+                raise RuntimeError('TRT: engine build failed (OOM?)')
+            with open(engine_path, 'wb') as f:
+                f.write(serialized)
+            del builder, network, parser, config, serialized
+            gc.collect()
+            torch.cuda.empty_cache()
+            print(f'[TensorRTDetector] Engine saved: {engine_path}')
+
+        runtime = trt.Runtime(logger)
+        with open(engine_path, 'rb') as f:
+            self.engine = runtime.deserialize_cuda_engine(f.read())
+        self.context = self.engine.create_execution_context()
+
+        self.input_name  = self.engine.get_tensor_name(0)
+        self.output_name = self.engine.get_tensor_name(1)
+        in_shape  = self.engine.get_tensor_shape(self.input_name)
+        out_shape = self.engine.get_tensor_shape(self.output_name)
+        self.input_h = int(in_shape[2])
+        self.input_w = int(in_shape[3])
+
+        # Pre-allocate persistent CUDA buffers
+        self._inp_buf = torch.empty(
+            (int(in_shape[0]), int(in_shape[1]), self.input_h, self.input_w),
+            dtype=torch.float32, device='cuda')
+        self._out_buf = torch.empty(
+            (int(out_shape[0]), int(out_shape[1]), int(out_shape[2])),
+            dtype=torch.float32, device='cuda')
+        self._stream = torch.cuda.Stream()
+
+        self.context.set_tensor_address(self.input_name,  self._inp_buf.data_ptr())
+        self.context.set_tensor_address(self.output_name, self._out_buf.data_ptr())
+
+        # CPU-side pre-allocated blob
+        self._blob = np.empty((1, 3, self.input_h, self.input_w), dtype=np.float32)
+
+        nc = max(int(out_shape[1]) - 4, 1)
+        if class_names is not None:
+            self.names = ({i: n for i, n in enumerate(class_names)}
+                          if isinstance(class_names, list) else class_names)
+        else:
+            self.names = OnnxDetector._read_onnx_names(onnx_path, nc)
+
+        print(f'[TensorRTDetector] Ready  input:{self.input_h}x{self.input_w}'
+              f'  classes:{list(self.names.values())}')
+
+    def predict(self, img, imgsz=640, conf=0.4, iou=0.45, device='cuda'):
+        import torch
+
+        orig_h, orig_w = img.shape[:2]
+        self._preprocess(img)
+
+        self._inp_buf.copy_(torch.from_numpy(self._blob), non_blocking=True)
+        with torch.cuda.stream(self._stream):
+            self.context.execute_async_v3(self._stream.cuda_stream)
+        self._stream.synchronize()
+
+        raw = self._out_buf.cpu().numpy()
+        boxes, cls_ids, confs = _parse_yolo(raw, conf)
+        if len(boxes) == 0:
+            return [_EmptyResult()]
+
+        sx = orig_w / self.input_w
+        sy = orig_h / self.input_h
+        boxes[:, 0] *= sx;  boxes[:, 1] *= sy
+        boxes[:, 2] *= sx;  boxes[:, 3] *= sy
+
+        keep = _nms(boxes, confs, iou)
+        return [_OnnxResult([
+            _OnnxBox(boxes[i:i+1], cls_ids[i:i+1].astype(np.float32), confs[i:i+1])
+            for i in keep
+        ])]
+
+    def _preprocess(self, img: np.ndarray):
+        resized = cv2.resize(img, (self.input_w, self.input_h))
+        blob = resized.astype(np.float32, copy=False)
+        blob *= (1.0 / 255.0)
+        np.copyto(self._blob, blob.transpose(2, 0, 1)[np.newaxis])
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Shared parsing / NMS
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _parse_yolo(raw: np.ndarray, conf_thres: float):
+    if raw.ndim == 3:
+        data = raw[0].T
+    elif raw.ndim == 2:
+        data = raw
+    else:
+        return np.empty((0, 4)), np.empty(0, dtype=np.intp), np.empty(0)
+
+    boxes_xywh = data[:, :4]
+    scores = data[:, 4:]
+    if scores.shape[1] == 1:
+        confidences = scores[:, 0]
+        class_ids = np.zeros(len(data), dtype=np.intp)
+    else:
+        class_ids = np.argmax(scores, axis=1)
+        confidences = scores[np.arange(len(class_ids)), class_ids]
+
+    mask = confidences >= conf_thres
+    return boxes_xywh[mask], class_ids[mask], confidences[mask]
+
+
+def _nms(boxes_xywh: np.ndarray, scores: np.ndarray, iou_thres: float):
+    if len(boxes_xywh) == 0:
+        return []
+    cx, cy, w, h = boxes_xywh[:, 0], boxes_xywh[:, 1], boxes_xywh[:, 2], boxes_xywh[:, 3]
+    x1 = cx - w * 0.5; x2 = cx + w * 0.5
+    y1 = cy - h * 0.5; y2 = cy + h * 0.5
+    areas = np.maximum(w * h, 0)
+    order = scores.argsort()[::-1]
+    keep = []
+    while len(order):
+        i = order[0]
+        keep.append(i)
+        if len(order) == 1:
+            break
+        rest = order[1:]
+        ix1 = np.maximum(x1[i], x1[rest])
+        iy1 = np.maximum(y1[i], y1[rest])
+        ix2 = np.minimum(x2[i], x2[rest])
+        iy2 = np.minimum(y2[i], y2[rest])
+        inter = np.maximum(0, ix2 - ix1) * np.maximum(0, iy2 - iy1)
+        iou = inter / (areas[i] + areas[rest] - inter + 1e-6)
+        order = rest[iou <= iou_thres]
+    return keep
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  ROS node
+# ─────────────────────────────────────────────────────────────────────────────
 
 class VisionNode(Node):
     def __init__(self):
         super().__init__('vision_node')
-        self.publisher_ = self.create_publisher(String, 'vision_subscriber', 10)
+        self.publisher_ = self.create_publisher(ObjectDetectionArray, 'vision/detections', 10)
+        self.sub_depth_pub_ = self.create_publisher(Float32, 'depth/sub_depth', 10)
 
-    def publish_detection(self, detection_str):
-        msg = String()
-        msg.data = detection_str
+    def publish_detections(self, infos):
+        msg = ObjectDetectionArray()
+        for info in infos:
+            detection = ObjectDetection()
+            detection.label = str(info['label'])
+            detection.confidence = float(info['confidence'])
+            detection.position = Point(
+                x=float(info['center_x']),
+                y=float(info['center_y']),
+                z=float(info.get('depth_m', -1.0)),
+            )
+            detection.bbox_width = float(info['bbox_width'])
+            detection.bbox_height = float(info['bbox_height'])
+            msg.detections.append(detection)
         self.publisher_.publish(msg)
-        self.get_logger().info(f'Published: {(msg.data)}')
+        if msg.detections:
+            labels = [d.label for d in msg.detections]
+            self.get_logger().info(
+                f'Published {len(msg.detections)} detections: {", ".join(labels)}'
+            )
+
+    def publish_sub_depth(self, depth_m: float):
+        msg = Float32()
+        msg.data = depth_m
+        self.sub_depth_pub_.publish(msg)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  Globals shared between threads
+# ─────────────────────────────────────────────────────────────────────────────
 
+_PKG_DIR = os.path.dirname(os.path.abspath(__file__))
+_DEFAULT_ONNX = os.path.join(_PKG_DIR, 'zed_right_24_06_15.onnx')
 
 lock = Lock()
-run_signal = False
+frame_ready = Event()
+inference_done = Event()
 exit_signal = False
+detections = []
+detection_infos = []
+model_names = {}
+inference_device = 'gpu'
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Helper functions
+# ─────────────────────────────────────────────────────────────────────────────
 
 def xywh2abcd(xywh, im_shape):
     output = np.zeros((4, 2))
-    x_min = (xywh[0] - 0.5 * xywh[2])
-    x_max = (xywh[0] + 0.5 * xywh[2])
-    y_min = (xywh[1] - 0.5 * xywh[3])
-    y_max = (xywh[1] + 0.5 * xywh[3])
-
+    img_h, img_w = im_shape[:2]
+    x_min = max(0.0, xywh[0] - 0.5 * xywh[2])
+    x_max = min(float(img_w - 1), xywh[0] + 0.5 * xywh[2])
+    y_min = max(0.0, xywh[1] - 0.5 * xywh[3])
+    y_max = min(float(img_h - 1), xywh[1] + 0.5 * xywh[3])
     output[0] = [x_min, y_min]
     output[1] = [x_max, y_min]
     output[2] = [x_max, y_max]
@@ -51,163 +364,343 @@ def xywh2abcd(xywh, im_shape):
     return output
 
 
-def detections_to_custom_box(detections, im0):
-    output = []
-    for det in detections:
+def detections_to_custom_box(det_list, im0, names):
+    zed_boxes = []
+    info_dicts = []
+    img_h, img_w = im0.shape[:2]
+    inv_w = 1.0 / img_w
+    inv_h = 1.0 / img_h
+    for det in det_list:
         xywh = det.xywh[0]
+        cls_id = int(np.asarray(det.cls).flat[0])
+        conf = float(np.asarray(det.conf).flat[0])
+
         obj = sl.CustomBoxObjectData()
         obj.bounding_box_2d = xywh2abcd(xywh, im0.shape)
-        obj.label = det.cls
-        obj.probability = det.conf
+        obj.label = cls_id
+        obj.probability = conf
         obj.is_grounded = False
-        output.append(obj)
-    return output
+        zed_boxes.append(obj)
+
+        info_dicts.append({
+            'label':       names.get(cls_id, str(cls_id)),
+            'confidence':  conf,
+            'center_x':    float(xywh[0]) * inv_w,
+            'center_y':    float(xywh[1]) * inv_h,
+            'bbox_width':  float(xywh[2]) * inv_w,
+            'bbox_height': float(xywh[3]) * inv_h,
+            'depth_m':     -1.0,
+        })
+    return zed_boxes, info_dicts
 
 
-def torch_thread(weights, img_size, conf_thres=0.2, iou_thres=0.45):
-    global image_net, exit_signal, run_signal, detections
+def enrich_depths(info_dicts, zed_objects):
+    for i, obj in enumerate(zed_objects.object_list):
+        if i >= len(info_dicts):
+            break
+        pos = obj.position
+        dist = float(np.sqrt(float(pos[0])**2 + float(pos[1])**2 + float(pos[2])**2))
+        info_dicts[i]['depth_m'] = dist if dist > 0.01 else -1.0
 
-    print("Initializing Network...")
-    model = YOLO(weights)
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Inference thread
+# ─────────────────────────────────────────────────────────────────────────────
+
+def inference_thread(weights, img_size, conf_thres=0.2, iou_thres=0.45, device='cuda', onnx_path=None):
+    global image_net, exit_signal, detections, detection_infos
+    global model_names, inference_device
+
+    print('Initializing Network...')
+
+    if onnx_path:
+        model = None
+        try:
+            import tensorrt, torch
+            model = TensorRTDetector(onnx_path)
+            print('[inference] Backend: TensorRT GPU (FP16)')
+        except Exception as trt_err:
+            print(f'[inference] TensorRT unavailable ({trt_err}), using ONNX/CPU')
+        if model is None:
+            model = OnnxDetector(onnx_path)
+            print('[inference] Backend: ONNX (CPU)')
+        model_names = model.names
+        use_onnx = True
+    else:
+        import torch
+        from ultralytics import YOLO
+        model = YOLO(weights)
+        model_names = model.names
+        use_onnx = False
+
+    print(f'Model classes: {model_names}')
+    inference_device = device
 
     while not exit_signal:
-        if run_signal:
-            lock.acquire()
-            img = cv2.cvtColor(image_net, cv2.COLOR_RGBA2RGB)
-            det = model.predict(img, save=False, imgsz=img_size, conf=conf_thres, iou=iou_thres)[0].cpu().numpy().boxes
-            detections = detections_to_custom_box(det, image_net)
-            lock.release()
-            run_signal = False
-        sleep(0.01)
+        if not frame_ready.wait(timeout=0.1):
+            continue
+        frame_ready.clear()
+        if exit_signal:
+            break
+
+        try:
+            with lock:
+                img = cv2.cvtColor(image_net, cv2.COLOR_RGBA2RGB)
+
+            try:
+                if use_onnx:
+                    det = model.predict(img, imgsz=img_size, conf=conf_thres, iou=iou_thres)[0].boxes
+                else:
+                    import torch
+                    det = model.predict(
+                        img, save=False, imgsz=img_size, conf=conf_thres,
+                        iou=iou_thres, device=inference_device,
+                    )[0].cpu().numpy().boxes
+            except RuntimeError as err:
+                print(f'Inference error: {err}')
+                if not use_onnx and inference_device != 'cpu':
+                    print('Falling back to CPU inference...')
+                    inference_device = 'cpu'
+                    det = model.predict(
+                        img, save=False, imgsz=img_size, conf=conf_thres,
+                        iou=iou_thres, device='cpu',
+                    )[0].cpu().numpy().boxes
+                else:
+                    det = []
+
+            zed_boxes, infos = detections_to_custom_box(det, img, model_names)
+            with lock:
+                detections = zed_boxes
+                detection_infos = infos
+        finally:
+            inference_done.set()
 
 
-def main(node):
+# ─────────────────────────────────────────────────────────────────────────────
+#  Main camera + ZED loop
+# ─────────────────────────────────────────────────────────────────────────────
 
-    global image_net, exit_signal, run_signal, detections
+def run_detector(node):
+    global image_net, exit_signal, detections, detection_infos
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('--weights', type=str, default='/home/yirehban/Downloads/updatedbest.pt', help='model.pt path(s)')
-    parser.add_argument('--svo', type=str, default=None, help='optional svo file, if not passed, use the plugged camera instead')
-    parser.add_argument('--img_size', type=int, default=416, help='inference size (pixels)')
-    parser.add_argument('--conf_thres', type=float, default=0.4, help='object confidence threshold')
+    parser.add_argument('--weights', type=str, default=_DEFAULT_ONNX)
+    parser.add_argument('--onnx', type=str, default=_DEFAULT_ONNX)
+    parser.add_argument('--classes', type=str, default=None)
+    parser.add_argument('--svo', type=str, default=None)
+    parser.add_argument('--img_size', type=int, default=416)
+    parser.add_argument('--conf_thres', type=float, default=0.4)
+    parser.add_argument('--device', type=str, default='cuda')
+    parser.add_argument('--zed_fps', type=int, default=60)
     opt = parser.parse_args()
 
-    capture_thread = Thread(target=torch_thread, kwargs={
-        'weights': opt.weights,
-        'img_size': opt.img_size,
-        'conf_thres': opt.conf_thres
-    })
+    onnx_path = opt.onnx
+    class_names = None
+    if onnx_path and opt.classes:
+        class_names = [c.strip() for c in opt.classes.split(',') if c.strip()]
+
+    model_label = (onnx_path or opt.weights).split('/')[-1]
+
+    capture_thread = Thread(
+        target=inference_thread,
+        kwargs={
+            'weights':    opt.weights,
+            'img_size':   opt.img_size,
+            'conf_thres': opt.conf_thres,
+            'iou_thres':  0.45,
+            'device':     opt.device,
+            'onnx_path':  onnx_path,
+        },
+        daemon=True,
+    )
     capture_thread.start()
 
-    print("Initializing Camera...")
+    print('Initializing Camera...')
     zed = sl.Camera()
+    image_left_tmp = sl.Mat()
+    image_left = sl.Mat()
+    object_detection_enabled = False
+    positional_tracking_enabled = False
 
     input_type = sl.InputType()
     if opt.svo:
         input_type.set_from_svo_file(opt.svo)
 
-    init_params = sl.InitParameters(input_t=input_type, svo_real_time_mode=True)
-    init_params.coordinate_units = sl.UNIT.METER
-    init_params.depth_mode = sl.DEPTH_MODE.NEURAL
-    init_params.coordinate_system = sl.COORDINATE_SYSTEM.RIGHT_HANDED_Y_UP
-    init_params.depth_maximum_distance = 50
+    # Prioritise PERFORMANCE — NEURAL/ULTRA consistently OOM on Jetson Orin 8GB.
+    # Keep them as lower-priority options for machines with more VRAM.
+    init_candidates = [
+        (sl.RESOLUTION.HD720, sl.DEPTH_MODE.PERFORMANCE,  opt.zed_fps),
+        (sl.RESOLUTION.VGA,   sl.DEPTH_MODE.PERFORMANCE,  opt.zed_fps),
+        (sl.RESOLUTION.HD720, sl.DEPTH_MODE.PERFORMANCE,  30),
+        (sl.RESOLUTION.VGA,   sl.DEPTH_MODE.PERFORMANCE,  30),
+        (sl.RESOLUTION.HD720, sl.DEPTH_MODE.NEURAL,       opt.zed_fps),
+        (sl.RESOLUTION.HD720, sl.DEPTH_MODE.ULTRA,        opt.zed_fps),
+        (sl.RESOLUTION.HD720, sl.DEPTH_MODE.NONE,         opt.zed_fps),
+        (sl.RESOLUTION.VGA,   sl.DEPTH_MODE.NONE,         opt.zed_fps),
+    ]
 
     runtime_params = sl.RuntimeParameters()
-    status = zed.open(init_params)
+    runtime_params.enable_fill_mode = False
+    status = sl.ERROR_CODE.FAILURE
+    init_params = None
+
+    for resolution, depth_mode, fps in init_candidates:
+        candidate = sl.InitParameters(input_t=input_type, svo_real_time_mode=True)
+        candidate.coordinate_units = sl.UNIT.METER
+        candidate.depth_mode = depth_mode
+        candidate.coordinate_system = sl.COORDINATE_SYSTEM.RIGHT_HANDED_Y_UP
+        candidate.depth_minimum_distance = 0.3
+        candidate.depth_maximum_distance = 20
+        candidate.camera_resolution = resolution
+        candidate.camera_fps = fps
+        candidate.sdk_verbose = 0
+        status = zed.open(candidate)
+        if status == sl.ERROR_CODE.SUCCESS:
+            init_params = candidate
+            print(f'Initialized Camera: resolution={resolution}, depth={depth_mode}, fps={fps}')
+            break
+        print(f'ZED open failed ({resolution}, {depth_mode}, {fps}): {status}')
+        # Explicit close to free leaked CUDA memory from failed open
+        zed.close()
+        gc.collect()
 
     if status != sl.ERROR_CODE.SUCCESS:
         print(repr(status))
-        exit()
+        print('\nAll camera configurations failed. Troubleshooting steps:')
+        print('  1. Run /usr/local/zed/tools/ZED_Diagnostic for a hardware report.')
+        print('  2. Replug the ZED camera into a USB 3.0 port.')
+        print('  3. Check that no other process holds the camera: fuser /dev/video0 /dev/video1')
+        exit_signal = True
+        capture_thread.join(timeout=2.0)
+        return
 
-    image_left_tmp = sl.Mat()
-    print("Initialized Camera")
+    has_depth = init_params.depth_mode != sl.DEPTH_MODE.NONE
 
-    positional_tracking_parameters = sl.PositionalTrackingParameters()
-    zed.enable_positional_tracking(positional_tracking_parameters)
-
-    obj_param = sl.ObjectDetectionParameters()
-    obj_param.detection_model = sl.OBJECT_DETECTION_MODEL.CUSTOM_BOX_OBJECTS
-    obj_param.enable_tracking = True
-    obj_param.enable_segmentation = False
-    zed.enable_object_detection(obj_param)
-
-    objects = sl.Objects()
-    obj_runtime_param = sl.CustomObjectDetectionRuntimeParameters()
-
-    camera_infos = zed.get_camera_information()
-    camera_res = camera_infos.camera_configuration.resolution
-
-    viewer = gl.GLViewer()
-    point_cloud_res = sl.Resolution(min(camera_res.width, 720), min(camera_res.height, 404))
-    point_cloud_render = sl.Mat()
-    viewer.init(camera_infos.camera_model, point_cloud_res, obj_param.enable_tracking)
-    point_cloud = sl.Mat(point_cloud_res.width, point_cloud_res.height, sl.MAT_TYPE.F32_C4, sl.MEM.CPU)
-    image_left = sl.Mat()
-
-    display_resolution = sl.Resolution(min(camera_res.width, 1280), min(camera_res.height, 720))
-    image_scale = [display_resolution.width / camera_res.width, display_resolution.height / camera_res.height]
-    image_left_ocv = np.full((display_resolution.height, display_resolution.width, 4), [245, 239, 239, 255], np.uint8)
-
-    camera_config = camera_infos.camera_configuration
-    tracks_resolution = sl.Resolution(400, display_resolution.height)
-    track_view_generator = cv_viewer.TrackingViewer(tracks_resolution, camera_config.fps, init_params.depth_maximum_distance)
-    track_view_generator.set_camera_calibration(camera_config.calibration_parameters)
-    image_track_ocv = np.zeros((tracks_resolution.height, tracks_resolution.width, 4), np.uint8)
-
-    cam_w_pose = sl.Pose()
-
-    while viewer.is_available() and not exit_signal:
-        if zed.grab(runtime_params) == sl.ERROR_CODE.SUCCESS:
-            print(zed.get_current_fps())
-
-            lock.acquire()
-            zed.retrieve_image(image_left_tmp, sl.VIEW.LEFT)
-            image_net = image_left_tmp.get_data()
-            lock.release()
-            run_signal = True
-
-            while run_signal:
-                sleep(0.001)
-
-            lock.acquire()
-            zed.ingest_custom_box_objects(detections)
-            lock.release()
-            zed.retrieve_custom_objects(objects, obj_runtime_param)
-
-            zed.retrieve_measure(point_cloud, sl.MEASURE.XYZRGBA, sl.MEM.CPU, point_cloud_res)
-            point_cloud.copy_to(point_cloud_render)
-            zed.retrieve_image(image_left, sl.VIEW.LEFT, sl.MEM.CPU, display_resolution)
-            zed.get_position(cam_w_pose, sl.REFERENCE_FRAME.WORLD)
-
-            viewer.updateData(point_cloud_render, objects)
-
-            np.copyto(image_left_ocv, image_left.get_data())
-            cv_viewer.render_2D(image_left_ocv, image_scale, objects, obj_param.enable_tracking)
-            global_image = cv2.hconcat([image_left_ocv, image_track_ocv])
-
-            track_view_generator.generate_view(objects, cam_w_pose, image_track_ocv, objects.is_tracked)
-            cv2.imshow("ZED | 2D View and Birds View", global_image)
-
-            if (detections is None or len(detections) == 0):
-                node.publish_detection("No detections")
+    try:
+        if has_depth:
+            pt_params = sl.PositionalTrackingParameters()
+            pt_status = zed.enable_positional_tracking(pt_params)
+            if pt_status == sl.ERROR_CODE.SUCCESS:
+                positional_tracking_enabled = True
+                print('ZED positional tracking enabled')
             else:
-                for obj in detections: 
-                    node.publish_detection(str(obj.label))
-            
+                print(f'Positional tracking not available: {pt_status}')
+        else:
+            print('Skipping positional tracking (no depth mode)')
+
+        obj_param = sl.ObjectDetectionParameters()
+        obj_param.detection_model = sl.OBJECT_DETECTION_MODEL.CUSTOM_BOX_OBJECTS
+        obj_param.enable_tracking = True
+        obj_param.enable_segmentation = False
+        if has_depth:
+            od_status = zed.enable_object_detection(obj_param)
+            if od_status == sl.ERROR_CODE.SUCCESS:
+                object_detection_enabled = True
+            else:
+                print(f'ZED object detection unavailable: {od_status} — running 2D-only')
+        else:
+            print('Running in 2D-only mode (no depth — detections will lack distance)')
+
+        objects = sl.Objects()
+        obj_runtime_param = sl.CustomObjectDetectionRuntimeParameters()
+        zed_pose = sl.Pose()
+
+        camera_infos = zed.get_camera_information()
+        camera_res = camera_infos.camera_configuration.resolution
+        display_resolution = sl.Resolution(
+            min(camera_res.width, 960), min(camera_res.height, 540)
+        )
+        image_scale = [
+            display_resolution.width  / camera_res.width,
+            display_resolution.height / camera_res.height,
+        ]
+
+        mode_label = '3D' if object_detection_enabled else '2D-only'
+        hud_line1 = f'MODEL: {model_label} conf>={opt.conf_thres:.2f}'
+        hud_line3 = f'ZED: {camera_res.width}x{camera_res.height}@{camera_infos.camera_configuration.fps}'
+
+        while not exit_signal:
+            if zed.grab(runtime_params) != sl.ERROR_CODE.SUCCESS:
+                sleep(0.005)
+                continue
+
+            # Grab frame for inference
+            with lock:
+                zed.retrieve_image(image_left_tmp, sl.VIEW.LEFT)
+                image_net = image_left_tmp.get_data()
+
+            inference_done.clear()
+            frame_ready.set()
+
+            # Wait for inference thread
+            inference_done.wait(timeout=1.0)
+
+            if object_detection_enabled:
+                with lock:
+                    zed.ingest_custom_box_objects(detections)
+                zed.retrieve_custom_objects(objects, obj_runtime_param)
+                with lock:
+                    enrich_depths(detection_infos, objects)
+                    local_infos = list(detection_infos)
+            else:
+                with lock:
+                    local_infos = list(detection_infos)
+
+            if positional_tracking_enabled:
+                zed.get_position(zed_pose, sl.REFERENCE_FRAME.WORLD)
+                translation = zed_pose.get_translation(sl.Translation()).get()
+                sub_depth_m = -float(translation[1])
+                node.publish_sub_depth(sub_depth_m)
+
+            # Render
+            zed.retrieve_image(image_left, sl.VIEW.LEFT, sl.MEM.CPU, display_resolution)
+            image_left_ocv = image_left.get_data()
+            if object_detection_enabled:
+                cv_viewer.render_2D(image_left_ocv, image_scale, objects, obj_param.enable_tracking)
+
+            cv2.putText(image_left_ocv, hud_line1,
+                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0, 255), 2)
+            cv2.putText(image_left_ocv, f'DEVICE: {inference_device} img:{opt.img_size} [{mode_label}]',
+                        (10, 62), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255, 255), 2)
+            cv2.putText(image_left_ocv, hud_line3,
+                        (10, 94), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 0, 255), 2)
+            cv2.imshow('ZED | Live View', image_left_ocv)
+
+            node.publish_detections(local_infos)
+
             key = cv2.waitKey(1)
             if key in [27, ord('q'), ord('Q')]:
                 exit_signal = True
-        else:
-            exit_signal = True
+    finally:
+        exit_signal = True
+        frame_ready.set()
+        capture_thread.join(timeout=2.0)
+        cv2.destroyAllWindows()
+        if object_detection_enabled:
+            try:
+                zed.disable_object_detection()
+            except Exception:
+                pass
+        if positional_tracking_enabled:
+            try:
+                zed.disable_positional_tracking()
+            except Exception:
+                pass
+        try:
+            zed.close()
+        except Exception:
+            pass
 
-    viewer.exit()
-    exit_signal = True
-    zed.close()
+
+def main():
+    rclpy.init(args=None)
+    vision_node = VisionNode()
+    try:
+        run_detector(vision_node)
+    finally:
+        vision_node.destroy_node()
+        rclpy.shutdown()
 
 
 if __name__ == '__main__':
-    rclpy.init(args=None)
-    vision_sub = VisionNode()
-    with torch.no_grad():
-        main(vision_sub)
-    rclpy.shutdown()
+    main()

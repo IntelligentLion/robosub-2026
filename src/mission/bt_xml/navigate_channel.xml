@@ -4,7 +4,7 @@
   <BehaviorTree ID="Navigate_Channel">
     <Fallback>
       <Sequence>
-        <preferred_side_is_L preferred_side="R"/>
+        <preferred_side_is_L preferred_side="{preferred_side}"/>
         <Repeat num_cycles="3">
           <Sequence>
             <Center_sub_to_face_midpoint_between_white_PVC_on_the_left_and_red_PVC_on_the_right/>

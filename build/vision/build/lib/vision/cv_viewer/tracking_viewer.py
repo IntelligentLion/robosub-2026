@@ -1,9 +1,6 @@
 import cv2
 import numpy as np
 
-import sys
-sys.path.append('/home/yirehban/Desktop/test1/cv_viewer/utils.py')
-
 from .utils import *
 import pyzed.sl as sl
 import math

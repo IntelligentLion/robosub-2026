@@ -23,7 +23,7 @@ function(ament_cmake_symlink_install_directory cmake_current_source_dir)
 
   # make destination absolute path and ensure that it exists
   if(NOT IS_ABSOLUTE "${ARG_DESTINATION}")
-    set(ARG_DESTINATION "/home/yirehban/ros2_ws/install/auv_msgs/${ARG_DESTINATION}")
+    set(ARG_DESTINATION "/home/robosub/UPDATEDCODE/install/auv_msgs/${ARG_DESTINATION}")
   endif()
   if(NOT EXISTS "${ARG_DESTINATION}")
     file(MAKE_DIRECTORY "${ARG_DESTINATION}")
@@ -123,7 +123,7 @@ function(ament_cmake_symlink_install_files cmake_current_source_dir)
 
   # make destination an absolute path and ensure that it exists
   if(NOT IS_ABSOLUTE "${ARG_DESTINATION}")
-    set(ARG_DESTINATION "/home/yirehban/ros2_ws/install/auv_msgs/${ARG_DESTINATION}")
+    set(ARG_DESTINATION "/home/robosub/UPDATEDCODE/install/auv_msgs/${ARG_DESTINATION}")
   endif()
   if(NOT EXISTS "${ARG_DESTINATION}")
     file(MAKE_DIRECTORY "${ARG_DESTINATION}")
@@ -181,7 +181,7 @@ function(ament_cmake_symlink_install_programs cmake_current_source_dir)
 
   # make destination an absolute path and ensure that it exists
   if(NOT IS_ABSOLUTE "${ARG_DESTINATION}")
-    set(ARG_DESTINATION "/home/yirehban/ros2_ws/install/auv_msgs/${ARG_DESTINATION}")
+    set(ARG_DESTINATION "/home/robosub/UPDATEDCODE/install/auv_msgs/${ARG_DESTINATION}")
   endif()
   if(NOT EXISTS "${ARG_DESTINATION}")
     file(MAKE_DIRECTORY "${ARG_DESTINATION}")
@@ -251,7 +251,7 @@ function(ament_cmake_symlink_install_targets)
 
     # make destination an absolute path and ensure that it exists
     if(NOT IS_ABSOLUTE "${destination}")
-      set(destination "/home/yirehban/ros2_ws/install/auv_msgs/${destination}")
+      set(destination "/home/robosub/UPDATEDCODE/install/auv_msgs/${destination}")
     endif()
     if(NOT EXISTS "${destination}")
       file(MAKE_DIRECTORY "${destination}")
@@ -310,44 +310,143 @@ message(STATUS "Execute custom install script")
 
 # begin of custom install code
 
-# install(FILES "/home/yirehban/ros2_ws/build/auv_msgs/ament_cmake_index/share/ament_index/resource_index/package_run_dependencies/auv_msgs" "DESTINATION" "share/ament_index/resource_index/package_run_dependencies")
-ament_cmake_symlink_install_files("/home/yirehban/ros2_ws/src/auv_msgs" FILES "/home/yirehban/ros2_ws/build/auv_msgs/ament_cmake_index/share/ament_index/resource_index/package_run_dependencies/auv_msgs" "DESTINATION" "share/ament_index/resource_index/package_run_dependencies")
+# install(FILES "/home/robosub/UPDATEDCODE/build/auv_msgs/ament_cmake_index/share/ament_index/resource_index/rosidl_interfaces/auv_msgs" "DESTINATION" "share/ament_index/resource_index/rosidl_interfaces")
+ament_cmake_symlink_install_files("/home/robosub/UPDATEDCODE/src/auv_msgs" FILES "/home/robosub/UPDATEDCODE/build/auv_msgs/ament_cmake_index/share/ament_index/resource_index/rosidl_interfaces/auv_msgs" "DESTINATION" "share/ament_index/resource_index/rosidl_interfaces")
 
-# install(FILES "/home/yirehban/ros2_ws/build/auv_msgs/ament_cmake_index/share/ament_index/resource_index/parent_prefix_path/auv_msgs" "DESTINATION" "share/ament_index/resource_index/parent_prefix_path")
-ament_cmake_symlink_install_files("/home/yirehban/ros2_ws/src/auv_msgs" FILES "/home/yirehban/ros2_ws/build/auv_msgs/ament_cmake_index/share/ament_index/resource_index/parent_prefix_path/auv_msgs" "DESTINATION" "share/ament_index/resource_index/parent_prefix_path")
+# install(DIRECTORY "/home/robosub/UPDATEDCODE/build/auv_msgs/rosidl_generator_c/auv_msgs/" "DESTINATION" "include/auv_msgs/auv_msgs" "PATTERN" "*.h")
+ament_cmake_symlink_install_directory("/home/robosub/UPDATEDCODE/src/auv_msgs" DIRECTORY "/home/robosub/UPDATEDCODE/build/auv_msgs/rosidl_generator_c/auv_msgs/" "DESTINATION" "include/auv_msgs/auv_msgs" "PATTERN" "*.h")
+
+# install(FILES "/opt/ros/humble/lib/python3.10/site-packages/ament_package/template/environment_hook/library_path.sh" "DESTINATION" "share/auv_msgs/environment")
+ament_cmake_symlink_install_files("/home/robosub/UPDATEDCODE/src/auv_msgs" FILES "/opt/ros/humble/lib/python3.10/site-packages/ament_package/template/environment_hook/library_path.sh" "DESTINATION" "share/auv_msgs/environment")
+
+# install(FILES "/home/robosub/UPDATEDCODE/build/auv_msgs/ament_cmake_environment_hooks/library_path.dsv" "DESTINATION" "share/auv_msgs/environment")
+ament_cmake_symlink_install_files("/home/robosub/UPDATEDCODE/src/auv_msgs" FILES "/home/robosub/UPDATEDCODE/build/auv_msgs/ament_cmake_environment_hooks/library_path.dsv" "DESTINATION" "share/auv_msgs/environment")
+
+# install(DIRECTORY "/home/robosub/UPDATEDCODE/build/auv_msgs/rosidl_typesupport_fastrtps_c/auv_msgs/" "DESTINATION" "include/auv_msgs/auv_msgs" "PATTERN_EXCLUDE" "*.cpp")
+ament_cmake_symlink_install_directory("/home/robosub/UPDATEDCODE/src/auv_msgs" DIRECTORY "/home/robosub/UPDATEDCODE/build/auv_msgs/rosidl_typesupport_fastrtps_c/auv_msgs/" "DESTINATION" "include/auv_msgs/auv_msgs" "PATTERN_EXCLUDE" "*.cpp")
+
+# install(DIRECTORY "/home/robosub/UPDATEDCODE/build/auv_msgs/rosidl_typesupport_introspection_c/auv_msgs/" "DESTINATION" "include/auv_msgs/auv_msgs" "PATTERN" "*.h")
+ament_cmake_symlink_install_directory("/home/robosub/UPDATEDCODE/src/auv_msgs" DIRECTORY "/home/robosub/UPDATEDCODE/build/auv_msgs/rosidl_typesupport_introspection_c/auv_msgs/" "DESTINATION" "include/auv_msgs/auv_msgs" "PATTERN" "*.h")
+
+# install(DIRECTORY "/home/robosub/UPDATEDCODE/build/auv_msgs/rosidl_generator_cpp/auv_msgs/" "DESTINATION" "include/auv_msgs/auv_msgs" "PATTERN" "*.hpp")
+ament_cmake_symlink_install_directory("/home/robosub/UPDATEDCODE/src/auv_msgs" DIRECTORY "/home/robosub/UPDATEDCODE/build/auv_msgs/rosidl_generator_cpp/auv_msgs/" "DESTINATION" "include/auv_msgs/auv_msgs" "PATTERN" "*.hpp")
+
+# install(DIRECTORY "/home/robosub/UPDATEDCODE/build/auv_msgs/rosidl_typesupport_fastrtps_cpp/auv_msgs/" "DESTINATION" "include/auv_msgs/auv_msgs" "PATTERN_EXCLUDE" "*.cpp")
+ament_cmake_symlink_install_directory("/home/robosub/UPDATEDCODE/src/auv_msgs" DIRECTORY "/home/robosub/UPDATEDCODE/build/auv_msgs/rosidl_typesupport_fastrtps_cpp/auv_msgs/" "DESTINATION" "include/auv_msgs/auv_msgs" "PATTERN_EXCLUDE" "*.cpp")
+
+# install(DIRECTORY "/home/robosub/UPDATEDCODE/build/auv_msgs/rosidl_typesupport_introspection_cpp/auv_msgs/" "DESTINATION" "include/auv_msgs/auv_msgs" "PATTERN" "*.hpp")
+ament_cmake_symlink_install_directory("/home/robosub/UPDATEDCODE/src/auv_msgs" DIRECTORY "/home/robosub/UPDATEDCODE/build/auv_msgs/rosidl_typesupport_introspection_cpp/auv_msgs/" "DESTINATION" "include/auv_msgs/auv_msgs" "PATTERN" "*.hpp")
+
+# install(FILES "/home/robosub/UPDATEDCODE/build/auv_msgs/ament_cmake_environment_hooks/pythonpath.sh" "DESTINATION" "share/auv_msgs/environment")
+ament_cmake_symlink_install_files("/home/robosub/UPDATEDCODE/src/auv_msgs" FILES "/home/robosub/UPDATEDCODE/build/auv_msgs/ament_cmake_environment_hooks/pythonpath.sh" "DESTINATION" "share/auv_msgs/environment")
+
+# install(FILES "/home/robosub/UPDATEDCODE/build/auv_msgs/ament_cmake_environment_hooks/pythonpath.dsv" "DESTINATION" "share/auv_msgs/environment")
+ament_cmake_symlink_install_files("/home/robosub/UPDATEDCODE/src/auv_msgs" FILES "/home/robosub/UPDATEDCODE/build/auv_msgs/ament_cmake_environment_hooks/pythonpath.dsv" "DESTINATION" "share/auv_msgs/environment")
+
+# install(DIRECTORY "/home/robosub/UPDATEDCODE/build/auv_msgs/ament_cmake_python/auv_msgs/auv_msgs.egg-info/" "DESTINATION" "local/lib/python3.10/dist-packages/auv_msgs-0.0.0-py3.10.egg-info")
+ament_cmake_symlink_install_directory("/home/robosub/UPDATEDCODE/src/auv_msgs" DIRECTORY "/home/robosub/UPDATEDCODE/build/auv_msgs/ament_cmake_python/auv_msgs/auv_msgs.egg-info/" "DESTINATION" "local/lib/python3.10/dist-packages/auv_msgs-0.0.0-py3.10.egg-info")
+
+# install(DIRECTORY "/home/robosub/UPDATEDCODE/build/auv_msgs/rosidl_generator_py/auv_msgs/" "DESTINATION" "local/lib/python3.10/dist-packages/auv_msgs" "PATTERN_EXCLUDE" "*.pyc" "PATTERN_EXCLUDE" "__pycache__")
+ament_cmake_symlink_install_directory("/home/robosub/UPDATEDCODE/src/auv_msgs" DIRECTORY "/home/robosub/UPDATEDCODE/build/auv_msgs/rosidl_generator_py/auv_msgs/" "DESTINATION" "local/lib/python3.10/dist-packages/auv_msgs" "PATTERN_EXCLUDE" "*.pyc" "PATTERN_EXCLUDE" "__pycache__")
+
+# install("TARGETS" "auv_msgs__rosidl_typesupport_fastrtps_c__pyext" "DESTINATION" "local/lib/python3.10/dist-packages/auv_msgs")
+include("/home/robosub/UPDATEDCODE/build/auv_msgs/ament_cmake_symlink_install_targets_0_${CMAKE_INSTALL_CONFIG_NAME}.cmake")
+
+# install("TARGETS" "auv_msgs__rosidl_typesupport_introspection_c__pyext" "DESTINATION" "local/lib/python3.10/dist-packages/auv_msgs")
+include("/home/robosub/UPDATEDCODE/build/auv_msgs/ament_cmake_symlink_install_targets_1_${CMAKE_INSTALL_CONFIG_NAME}.cmake")
+
+# install("TARGETS" "auv_msgs__rosidl_typesupport_c__pyext" "DESTINATION" "local/lib/python3.10/dist-packages/auv_msgs")
+include("/home/robosub/UPDATEDCODE/build/auv_msgs/ament_cmake_symlink_install_targets_2_${CMAKE_INSTALL_CONFIG_NAME}.cmake")
+
+# install(FILES "/home/robosub/UPDATEDCODE/build/auv_msgs/rosidl_adapter/auv_msgs/msg/ObjectDetection.idl" "DESTINATION" "share/auv_msgs/msg")
+ament_cmake_symlink_install_files("/home/robosub/UPDATEDCODE/src/auv_msgs" FILES "/home/robosub/UPDATEDCODE/build/auv_msgs/rosidl_adapter/auv_msgs/msg/ObjectDetection.idl" "DESTINATION" "share/auv_msgs/msg")
+
+# install(FILES "/home/robosub/UPDATEDCODE/build/auv_msgs/rosidl_adapter/auv_msgs/msg/ObjectDetectionArray.idl" "DESTINATION" "share/auv_msgs/msg")
+ament_cmake_symlink_install_files("/home/robosub/UPDATEDCODE/src/auv_msgs" FILES "/home/robosub/UPDATEDCODE/build/auv_msgs/rosidl_adapter/auv_msgs/msg/ObjectDetectionArray.idl" "DESTINATION" "share/auv_msgs/msg")
+
+# install(FILES "/home/robosub/UPDATEDCODE/build/auv_msgs/rosidl_adapter/auv_msgs/msg/BehaviorStatus.idl" "DESTINATION" "share/auv_msgs/msg")
+ament_cmake_symlink_install_files("/home/robosub/UPDATEDCODE/src/auv_msgs" FILES "/home/robosub/UPDATEDCODE/build/auv_msgs/rosidl_adapter/auv_msgs/msg/BehaviorStatus.idl" "DESTINATION" "share/auv_msgs/msg")
+
+# install(FILES "/home/robosub/UPDATEDCODE/build/auv_msgs/rosidl_adapter/auv_msgs/msg/MovementCommand.idl" "DESTINATION" "share/auv_msgs/msg")
+ament_cmake_symlink_install_files("/home/robosub/UPDATEDCODE/src/auv_msgs" FILES "/home/robosub/UPDATEDCODE/build/auv_msgs/rosidl_adapter/auv_msgs/msg/MovementCommand.idl" "DESTINATION" "share/auv_msgs/msg")
+
+# install(FILES "/home/robosub/UPDATEDCODE/build/auv_msgs/rosidl_adapter/auv_msgs/msg/DepthInfo.idl" "DESTINATION" "share/auv_msgs/msg")
+ament_cmake_symlink_install_files("/home/robosub/UPDATEDCODE/src/auv_msgs" FILES "/home/robosub/UPDATEDCODE/build/auv_msgs/rosidl_adapter/auv_msgs/msg/DepthInfo.idl" "DESTINATION" "share/auv_msgs/msg")
+
+# install(FILES "/home/robosub/UPDATEDCODE/src/auv_msgs/msg/ObjectDetection.msg" "DESTINATION" "share/auv_msgs/msg")
+ament_cmake_symlink_install_files("/home/robosub/UPDATEDCODE/src/auv_msgs" FILES "/home/robosub/UPDATEDCODE/src/auv_msgs/msg/ObjectDetection.msg" "DESTINATION" "share/auv_msgs/msg")
+
+# install(FILES "/home/robosub/UPDATEDCODE/src/auv_msgs/msg/ObjectDetectionArray.msg" "DESTINATION" "share/auv_msgs/msg")
+ament_cmake_symlink_install_files("/home/robosub/UPDATEDCODE/src/auv_msgs" FILES "/home/robosub/UPDATEDCODE/src/auv_msgs/msg/ObjectDetectionArray.msg" "DESTINATION" "share/auv_msgs/msg")
+
+# install(FILES "/home/robosub/UPDATEDCODE/src/auv_msgs/msg/BehaviorStatus.msg" "DESTINATION" "share/auv_msgs/msg")
+ament_cmake_symlink_install_files("/home/robosub/UPDATEDCODE/src/auv_msgs" FILES "/home/robosub/UPDATEDCODE/src/auv_msgs/msg/BehaviorStatus.msg" "DESTINATION" "share/auv_msgs/msg")
+
+# install(FILES "/home/robosub/UPDATEDCODE/src/auv_msgs/msg/MovementCommand.msg" "DESTINATION" "share/auv_msgs/msg")
+ament_cmake_symlink_install_files("/home/robosub/UPDATEDCODE/src/auv_msgs" FILES "/home/robosub/UPDATEDCODE/src/auv_msgs/msg/MovementCommand.msg" "DESTINATION" "share/auv_msgs/msg")
+
+# install(FILES "/home/robosub/UPDATEDCODE/src/auv_msgs/msg/DepthInfo.msg" "DESTINATION" "share/auv_msgs/msg")
+ament_cmake_symlink_install_files("/home/robosub/UPDATEDCODE/src/auv_msgs" FILES "/home/robosub/UPDATEDCODE/src/auv_msgs/msg/DepthInfo.msg" "DESTINATION" "share/auv_msgs/msg")
+
+# install(FILES "/home/robosub/UPDATEDCODE/build/auv_msgs/ament_cmake_index/share/ament_index/resource_index/package_run_dependencies/auv_msgs" "DESTINATION" "share/ament_index/resource_index/package_run_dependencies")
+ament_cmake_symlink_install_files("/home/robosub/UPDATEDCODE/src/auv_msgs" FILES "/home/robosub/UPDATEDCODE/build/auv_msgs/ament_cmake_index/share/ament_index/resource_index/package_run_dependencies/auv_msgs" "DESTINATION" "share/ament_index/resource_index/package_run_dependencies")
+
+# install(FILES "/home/robosub/UPDATEDCODE/build/auv_msgs/ament_cmake_index/share/ament_index/resource_index/parent_prefix_path/auv_msgs" "DESTINATION" "share/ament_index/resource_index/parent_prefix_path")
+ament_cmake_symlink_install_files("/home/robosub/UPDATEDCODE/src/auv_msgs" FILES "/home/robosub/UPDATEDCODE/build/auv_msgs/ament_cmake_index/share/ament_index/resource_index/parent_prefix_path/auv_msgs" "DESTINATION" "share/ament_index/resource_index/parent_prefix_path")
 
 # install(FILES "/opt/ros/humble/share/ament_cmake_core/cmake/environment_hooks/environment/ament_prefix_path.sh" "DESTINATION" "share/auv_msgs/environment")
-ament_cmake_symlink_install_files("/home/yirehban/ros2_ws/src/auv_msgs" FILES "/opt/ros/humble/share/ament_cmake_core/cmake/environment_hooks/environment/ament_prefix_path.sh" "DESTINATION" "share/auv_msgs/environment")
+ament_cmake_symlink_install_files("/home/robosub/UPDATEDCODE/src/auv_msgs" FILES "/opt/ros/humble/share/ament_cmake_core/cmake/environment_hooks/environment/ament_prefix_path.sh" "DESTINATION" "share/auv_msgs/environment")
 
-# install(FILES "/home/yirehban/ros2_ws/build/auv_msgs/ament_cmake_environment_hooks/ament_prefix_path.dsv" "DESTINATION" "share/auv_msgs/environment")
-ament_cmake_symlink_install_files("/home/yirehban/ros2_ws/src/auv_msgs" FILES "/home/yirehban/ros2_ws/build/auv_msgs/ament_cmake_environment_hooks/ament_prefix_path.dsv" "DESTINATION" "share/auv_msgs/environment")
+# install(FILES "/home/robosub/UPDATEDCODE/build/auv_msgs/ament_cmake_environment_hooks/ament_prefix_path.dsv" "DESTINATION" "share/auv_msgs/environment")
+ament_cmake_symlink_install_files("/home/robosub/UPDATEDCODE/src/auv_msgs" FILES "/home/robosub/UPDATEDCODE/build/auv_msgs/ament_cmake_environment_hooks/ament_prefix_path.dsv" "DESTINATION" "share/auv_msgs/environment")
 
 # install(FILES "/opt/ros/humble/share/ament_cmake_core/cmake/environment_hooks/environment/path.sh" "DESTINATION" "share/auv_msgs/environment")
-ament_cmake_symlink_install_files("/home/yirehban/ros2_ws/src/auv_msgs" FILES "/opt/ros/humble/share/ament_cmake_core/cmake/environment_hooks/environment/path.sh" "DESTINATION" "share/auv_msgs/environment")
+ament_cmake_symlink_install_files("/home/robosub/UPDATEDCODE/src/auv_msgs" FILES "/opt/ros/humble/share/ament_cmake_core/cmake/environment_hooks/environment/path.sh" "DESTINATION" "share/auv_msgs/environment")
 
-# install(FILES "/home/yirehban/ros2_ws/build/auv_msgs/ament_cmake_environment_hooks/path.dsv" "DESTINATION" "share/auv_msgs/environment")
-ament_cmake_symlink_install_files("/home/yirehban/ros2_ws/src/auv_msgs" FILES "/home/yirehban/ros2_ws/build/auv_msgs/ament_cmake_environment_hooks/path.dsv" "DESTINATION" "share/auv_msgs/environment")
+# install(FILES "/home/robosub/UPDATEDCODE/build/auv_msgs/ament_cmake_environment_hooks/path.dsv" "DESTINATION" "share/auv_msgs/environment")
+ament_cmake_symlink_install_files("/home/robosub/UPDATEDCODE/src/auv_msgs" FILES "/home/robosub/UPDATEDCODE/build/auv_msgs/ament_cmake_environment_hooks/path.dsv" "DESTINATION" "share/auv_msgs/environment")
 
-# install(FILES "/home/yirehban/ros2_ws/build/auv_msgs/ament_cmake_environment_hooks/local_setup.bash" "DESTINATION" "share/auv_msgs")
-ament_cmake_symlink_install_files("/home/yirehban/ros2_ws/src/auv_msgs" FILES "/home/yirehban/ros2_ws/build/auv_msgs/ament_cmake_environment_hooks/local_setup.bash" "DESTINATION" "share/auv_msgs")
+# install(FILES "/home/robosub/UPDATEDCODE/build/auv_msgs/ament_cmake_environment_hooks/local_setup.bash" "DESTINATION" "share/auv_msgs")
+ament_cmake_symlink_install_files("/home/robosub/UPDATEDCODE/src/auv_msgs" FILES "/home/robosub/UPDATEDCODE/build/auv_msgs/ament_cmake_environment_hooks/local_setup.bash" "DESTINATION" "share/auv_msgs")
 
-# install(FILES "/home/yirehban/ros2_ws/build/auv_msgs/ament_cmake_environment_hooks/local_setup.sh" "DESTINATION" "share/auv_msgs")
-ament_cmake_symlink_install_files("/home/yirehban/ros2_ws/src/auv_msgs" FILES "/home/yirehban/ros2_ws/build/auv_msgs/ament_cmake_environment_hooks/local_setup.sh" "DESTINATION" "share/auv_msgs")
+# install(FILES "/home/robosub/UPDATEDCODE/build/auv_msgs/ament_cmake_environment_hooks/local_setup.sh" "DESTINATION" "share/auv_msgs")
+ament_cmake_symlink_install_files("/home/robosub/UPDATEDCODE/src/auv_msgs" FILES "/home/robosub/UPDATEDCODE/build/auv_msgs/ament_cmake_environment_hooks/local_setup.sh" "DESTINATION" "share/auv_msgs")
 
-# install(FILES "/home/yirehban/ros2_ws/build/auv_msgs/ament_cmake_environment_hooks/local_setup.zsh" "DESTINATION" "share/auv_msgs")
-ament_cmake_symlink_install_files("/home/yirehban/ros2_ws/src/auv_msgs" FILES "/home/yirehban/ros2_ws/build/auv_msgs/ament_cmake_environment_hooks/local_setup.zsh" "DESTINATION" "share/auv_msgs")
+# install(FILES "/home/robosub/UPDATEDCODE/build/auv_msgs/ament_cmake_environment_hooks/local_setup.zsh" "DESTINATION" "share/auv_msgs")
+ament_cmake_symlink_install_files("/home/robosub/UPDATEDCODE/src/auv_msgs" FILES "/home/robosub/UPDATEDCODE/build/auv_msgs/ament_cmake_environment_hooks/local_setup.zsh" "DESTINATION" "share/auv_msgs")
 
-# install(FILES "/home/yirehban/ros2_ws/build/auv_msgs/ament_cmake_environment_hooks/local_setup.dsv" "DESTINATION" "share/auv_msgs")
-ament_cmake_symlink_install_files("/home/yirehban/ros2_ws/src/auv_msgs" FILES "/home/yirehban/ros2_ws/build/auv_msgs/ament_cmake_environment_hooks/local_setup.dsv" "DESTINATION" "share/auv_msgs")
+# install(FILES "/home/robosub/UPDATEDCODE/build/auv_msgs/ament_cmake_environment_hooks/local_setup.dsv" "DESTINATION" "share/auv_msgs")
+ament_cmake_symlink_install_files("/home/robosub/UPDATEDCODE/src/auv_msgs" FILES "/home/robosub/UPDATEDCODE/build/auv_msgs/ament_cmake_environment_hooks/local_setup.dsv" "DESTINATION" "share/auv_msgs")
 
-# install(FILES "/home/yirehban/ros2_ws/build/auv_msgs/ament_cmake_environment_hooks/package.dsv" "DESTINATION" "share/auv_msgs")
-ament_cmake_symlink_install_files("/home/yirehban/ros2_ws/src/auv_msgs" FILES "/home/yirehban/ros2_ws/build/auv_msgs/ament_cmake_environment_hooks/package.dsv" "DESTINATION" "share/auv_msgs")
+# install(FILES "/home/robosub/UPDATEDCODE/build/auv_msgs/ament_cmake_environment_hooks/package.dsv" "DESTINATION" "share/auv_msgs")
+ament_cmake_symlink_install_files("/home/robosub/UPDATEDCODE/src/auv_msgs" FILES "/home/robosub/UPDATEDCODE/build/auv_msgs/ament_cmake_environment_hooks/package.dsv" "DESTINATION" "share/auv_msgs")
 
-# install(FILES "/home/yirehban/ros2_ws/build/auv_msgs/ament_cmake_index/share/ament_index/resource_index/packages/auv_msgs" "DESTINATION" "share/ament_index/resource_index/packages")
-ament_cmake_symlink_install_files("/home/yirehban/ros2_ws/src/auv_msgs" FILES "/home/yirehban/ros2_ws/build/auv_msgs/ament_cmake_index/share/ament_index/resource_index/packages/auv_msgs" "DESTINATION" "share/ament_index/resource_index/packages")
+# install(FILES "/home/robosub/UPDATEDCODE/build/auv_msgs/ament_cmake_index/share/ament_index/resource_index/packages/auv_msgs" "DESTINATION" "share/ament_index/resource_index/packages")
+ament_cmake_symlink_install_files("/home/robosub/UPDATEDCODE/src/auv_msgs" FILES "/home/robosub/UPDATEDCODE/build/auv_msgs/ament_cmake_index/share/ament_index/resource_index/packages/auv_msgs" "DESTINATION" "share/ament_index/resource_index/packages")
 
-# install(FILES "/home/yirehban/ros2_ws/build/auv_msgs/ament_cmake_core/auv_msgsConfig.cmake" "/home/yirehban/ros2_ws/build/auv_msgs/ament_cmake_core/auv_msgsConfig-version.cmake" "DESTINATION" "share/auv_msgs/cmake")
-ament_cmake_symlink_install_files("/home/yirehban/ros2_ws/src/auv_msgs" FILES "/home/yirehban/ros2_ws/build/auv_msgs/ament_cmake_core/auv_msgsConfig.cmake" "/home/yirehban/ros2_ws/build/auv_msgs/ament_cmake_core/auv_msgsConfig-version.cmake" "DESTINATION" "share/auv_msgs/cmake")
+# install(FILES "/home/robosub/UPDATEDCODE/build/auv_msgs/rosidl_cmake/rosidl_cmake-extras.cmake" "DESTINATION" "share/auv_msgs/cmake")
+ament_cmake_symlink_install_files("/home/robosub/UPDATEDCODE/src/auv_msgs" FILES "/home/robosub/UPDATEDCODE/build/auv_msgs/rosidl_cmake/rosidl_cmake-extras.cmake" "DESTINATION" "share/auv_msgs/cmake")
 
-# install(FILES "/home/yirehban/ros2_ws/src/auv_msgs/package.xml" "DESTINATION" "share/auv_msgs")
-ament_cmake_symlink_install_files("/home/yirehban/ros2_ws/src/auv_msgs" FILES "/home/yirehban/ros2_ws/src/auv_msgs/package.xml" "DESTINATION" "share/auv_msgs")
+# install(FILES "/home/robosub/UPDATEDCODE/build/auv_msgs/ament_cmake_export_dependencies/ament_cmake_export_dependencies-extras.cmake" "DESTINATION" "share/auv_msgs/cmake")
+ament_cmake_symlink_install_files("/home/robosub/UPDATEDCODE/src/auv_msgs" FILES "/home/robosub/UPDATEDCODE/build/auv_msgs/ament_cmake_export_dependencies/ament_cmake_export_dependencies-extras.cmake" "DESTINATION" "share/auv_msgs/cmake")
+
+# install(FILES "/home/robosub/UPDATEDCODE/build/auv_msgs/ament_cmake_export_include_directories/ament_cmake_export_include_directories-extras.cmake" "DESTINATION" "share/auv_msgs/cmake")
+ament_cmake_symlink_install_files("/home/robosub/UPDATEDCODE/src/auv_msgs" FILES "/home/robosub/UPDATEDCODE/build/auv_msgs/ament_cmake_export_include_directories/ament_cmake_export_include_directories-extras.cmake" "DESTINATION" "share/auv_msgs/cmake")
+
+# install(FILES "/home/robosub/UPDATEDCODE/build/auv_msgs/ament_cmake_export_libraries/ament_cmake_export_libraries-extras.cmake" "DESTINATION" "share/auv_msgs/cmake")
+ament_cmake_symlink_install_files("/home/robosub/UPDATEDCODE/src/auv_msgs" FILES "/home/robosub/UPDATEDCODE/build/auv_msgs/ament_cmake_export_libraries/ament_cmake_export_libraries-extras.cmake" "DESTINATION" "share/auv_msgs/cmake")
+
+# install(FILES "/home/robosub/UPDATEDCODE/build/auv_msgs/ament_cmake_export_targets/ament_cmake_export_targets-extras.cmake" "DESTINATION" "share/auv_msgs/cmake")
+ament_cmake_symlink_install_files("/home/robosub/UPDATEDCODE/src/auv_msgs" FILES "/home/robosub/UPDATEDCODE/build/auv_msgs/ament_cmake_export_targets/ament_cmake_export_targets-extras.cmake" "DESTINATION" "share/auv_msgs/cmake")
+
+# install(FILES "/home/robosub/UPDATEDCODE/build/auv_msgs/rosidl_cmake/rosidl_cmake_export_typesupport_targets-extras.cmake" "DESTINATION" "share/auv_msgs/cmake")
+ament_cmake_symlink_install_files("/home/robosub/UPDATEDCODE/src/auv_msgs" FILES "/home/robosub/UPDATEDCODE/build/auv_msgs/rosidl_cmake/rosidl_cmake_export_typesupport_targets-extras.cmake" "DESTINATION" "share/auv_msgs/cmake")
+
+# install(FILES "/home/robosub/UPDATEDCODE/build/auv_msgs/rosidl_cmake/rosidl_cmake_export_typesupport_libraries-extras.cmake" "DESTINATION" "share/auv_msgs/cmake")
+ament_cmake_symlink_install_files("/home/robosub/UPDATEDCODE/src/auv_msgs" FILES "/home/robosub/UPDATEDCODE/build/auv_msgs/rosidl_cmake/rosidl_cmake_export_typesupport_libraries-extras.cmake" "DESTINATION" "share/auv_msgs/cmake")
+
+# install(FILES "/home/robosub/UPDATEDCODE/build/auv_msgs/ament_cmake_core/auv_msgsConfig.cmake" "/home/robosub/UPDATEDCODE/build/auv_msgs/ament_cmake_core/auv_msgsConfig-version.cmake" "DESTINATION" "share/auv_msgs/cmake")
+ament_cmake_symlink_install_files("/home/robosub/UPDATEDCODE/src/auv_msgs" FILES "/home/robosub/UPDATEDCODE/build/auv_msgs/ament_cmake_core/auv_msgsConfig.cmake" "/home/robosub/UPDATEDCODE/build/auv_msgs/ament_cmake_core/auv_msgsConfig-version.cmake" "DESTINATION" "share/auv_msgs/cmake")
+
+# install(FILES "/home/robosub/UPDATEDCODE/src/auv_msgs/package.xml" "DESTINATION" "share/auv_msgs")
+ament_cmake_symlink_install_files("/home/robosub/UPDATEDCODE/src/auv_msgs" FILES "/home/robosub/UPDATEDCODE/src/auv_msgs/package.xml" "DESTINATION" "share/auv_msgs")

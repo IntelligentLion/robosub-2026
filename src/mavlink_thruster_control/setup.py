@@ -1,10 +1,4 @@
 from setuptools import find_packages, setup
-entry_points={
-    'console_scripts': [
-        'thruster_node = mavlink_thruster_node.thruster_node:main',
-    ],
-},
-
 
 
 package_name = 'mavlink_thruster_control'
@@ -20,8 +14,8 @@ setup(
     ],
     install_requires=['setuptools'],
     zip_safe=True,
-    maintainer='yirehban',
-    maintainer_email='yirehban@todo.todo',
+    maintainer='robosub',
+    maintainer_email='robosub@robosub.com',
     description='Control Pixhawk thrusters via ROS 2 and pymavlink',
     license='Apache-2.0',
     entry_points={

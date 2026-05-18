@@ -4,7 +4,7 @@
   <name>test</name>
   <version>0.0.0</version>
   <description>TODO: Package description</description>
-  <maintainer email="shrikrishna0219@gmail.com">yirehban</maintainer>
+  <maintainer email="shrikrishna0219@gmail.com">robosub</maintainer>
   <license>TODO: License declaration</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>

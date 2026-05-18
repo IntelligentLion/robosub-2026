@@ -1,8 +1,8 @@
-# Install script for directory: /home/yirehban/ros2_ws/src/mission/src
+# Install script for directory: /home/robosub/UPDATEDCODE/src/mission/src
 
 # Set the install prefix
 if(NOT DEFINED CMAKE_INSTALL_PREFIX)
-  set(CMAKE_INSTALL_PREFIX "/home/yirehban/ros2_ws/install/mission")
+  set(CMAKE_INSTALL_PREFIX "/home/robosub/UPDATEDCODE/install/mission")
 endif()
 string(REGEX REPLACE "/$" "" CMAKE_INSTALL_PREFIX "${CMAKE_INSTALL_PREFIX}")
 
@@ -43,7 +43,7 @@ if(NOT DEFINED CMAKE_OBJDUMP)
 endif()
 
 if("x${CMAKE_INSTALL_COMPONENT}x" STREQUAL "xUnspecifiedx" OR NOT CMAKE_INSTALL_COMPONENT)
-  include("/home/yirehban/ros2_ws/build/mission/ament_cmake_symlink_install/ament_cmake_symlink_install.cmake")
+  include("/home/robosub/UPDATEDCODE/build/mission/ament_cmake_symlink_install/ament_cmake_symlink_install.cmake")
 endif()
 
 if(CMAKE_INSTALL_COMPONENT)
@@ -54,5 +54,5 @@ endif()
 
 string(REPLACE ";" "\n" CMAKE_INSTALL_MANIFEST_CONTENT
        "${CMAKE_INSTALL_MANIFEST_FILES}")
-file(WRITE "/home/yirehban/ros2_ws/build/mission/${CMAKE_INSTALL_MANIFEST}"
+file(WRITE "/home/robosub/UPDATEDCODE/build/mission/${CMAKE_INSTALL_MANIFEST}"
      "${CMAKE_INSTALL_MANIFEST_CONTENT}")

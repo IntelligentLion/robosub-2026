@@ -13,13 +13,14 @@ setup(
     ],
     install_requires=['setuptools'],
     zip_safe=True,
-    maintainer='yirehban',
-    maintainer_email='yirehban@todo.todo',
+    maintainer='robosub',
+    maintainer_email='robosub@robosub.com',
     description='TODO: Package description',
     license='TODO: License declaration',
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
+            'depth_node = localization.depth_node:main',
         ],
     },
 )

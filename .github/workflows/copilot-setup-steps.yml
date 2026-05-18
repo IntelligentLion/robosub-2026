@@ -1,0 +1,65 @@
+# ------------------------------------------------------------------
+# Copilot Coding Agent Setup Steps
+# ------------------------------------------------------------------
+# Configures the environment for GitHub Copilot Coding Agent
+# (formerly Copilot Workspace) to work with AgentX repositories.
+#
+# This workflow runs during Copilot Coding Agent initialization
+# to ensure the agent has access to AgentX CLI, scripts, and
+# framework configuration.
+# ------------------------------------------------------------------
+
+name: Copilot Setup Steps
+
+on:
+  workflow_dispatch:
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup PowerShell
+        shell: bash
+        run: |
+          # Ensure pwsh is available for AgentX CLI
+          if ! command -v pwsh &> /dev/null; then
+            echo "PowerShell not found, installing..."
+            sudo apt-get update
+            sudo apt-get install -y powershell
+          fi
+
+      - name: Verify AgentX installation
+        shell: pwsh
+        run: |
+          # Check that AgentX framework files exist
+          if (Test-Path "AGENTS.md") {
+            Write-Host "[PASS] AGENTS.md found"
+          } else {
+            Write-Host "[WARN] AGENTS.md not found -- AgentX may not be initialized"
+          }
+
+          if (Test-Path ".agentx/agentx.ps1") {
+            Write-Host "[PASS] AgentX CLI found"
+            # Show available commands
+            ./.agentx/agentx.ps1 version
+          } else {
+            Write-Host "[WARN] AgentX CLI not found"
+          }
+
+      - name: Install VS Code extension dependencies
+        if: hashFiles('vscode-extension/package.json') != ''
+        working-directory: vscode-extension
+        run: npm ci
+
+      - name: Compile extension
+        if: hashFiles('vscode-extension/tsconfig.json') != ''
+        working-directory: vscode-extension
+        run: npm run compile

@@ -20,7 +20,7 @@ if err != sl.ERROR_CODE.SUCCESS:
 obj_param=sl.ObjectDetectionParameters()
 obj_param.enable_tracking=True
 obj_param.enable_segmentation=True
-obj_param.detection_model = "/home/yirehban/Downloads/model-1-yolov8n.onnx"
+obj_param.detection_model = "zed_right_24_06_15.onnx"
 
 if obj_param.enable_tracking:
     positional_tracking_param=sl.PositionalTrackingParameters()

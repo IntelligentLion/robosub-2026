@@ -4,7 +4,7 @@
   <name>vision</name>
   <version>0.0.0</version>
   <description>TODO: Package description</description>
-  <maintainer email="yirehban@todo.todo">yirehban</maintainer>
+  <maintainer email="robosub@robosub.com">robosub</maintainer>
   <license>TODO: License declaration</license>
 
   <depend>rclpy</depend>

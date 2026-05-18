@@ -1,9 +1,6 @@
 import cv2
 import numpy as np
 
-import sys
-sys.path.append('/home/yirehban/Desktop/test1/cv_viewer/utils.py')
-
 from .utils import *
 import pyzed.sl as sl
 import math
@@ -33,51 +30,51 @@ def get_image_position(bounding_box_image, img_scale):
 
 
 def render_2D(left_display, img_scale, objects, is_tracking_on):
-    overlay = left_display.copy()
-
+    has_mask = False
+    overlay = None
     line_thickness = 2
+    text_color = (255, 255, 255, 255)
+
     for obj in objects.object_list:
-        if render_object(obj, is_tracking_on):
-            base_color = generate_color_id_u(obj.id)
-            # Display image scaled 2D bounding box
-            top_left_corner = cvt(obj.bounding_box_2d[0], img_scale)
-            top_right_corner = cvt(obj.bounding_box_2d[1], img_scale)
-            bottom_right_corner = cvt(obj.bounding_box_2d[2], img_scale)
-            bottom_left_corner = cvt(obj.bounding_box_2d[3], img_scale)
+        if not render_object(obj, is_tracking_on):
+            continue
+        base_color = generate_color_id_u(obj.id)
+        tl = cvt(obj.bounding_box_2d[0], img_scale)
+        tr = cvt(obj.bounding_box_2d[1], img_scale)
+        br = cvt(obj.bounding_box_2d[2], img_scale)
+        bl = cvt(obj.bounding_box_2d[3], img_scale)
 
-            # Creation of the 2 horizontal lines
-            cv2.line(left_display, (int(top_left_corner[0]), int(top_left_corner[1])),
-                     (int(top_right_corner[0]), int(top_right_corner[1])), base_color, line_thickness)
-            cv2.line(left_display, (int(bottom_left_corner[0]), int(bottom_left_corner[1])),
-                     (int(bottom_right_corner[0]), int(bottom_right_corner[1])), base_color, line_thickness)
-            # Creation of 2 vertical lines
-            draw_vertical_line(left_display, bottom_left_corner, top_left_corner, base_color, line_thickness)
-            draw_vertical_line(left_display, bottom_right_corner, top_right_corner, base_color, line_thickness)
+        tl_i = (int(tl[0]), int(tl[1]))
+        tr_i = (int(tr[0]), int(tr[1]))
+        br_i = (int(br[0]), int(br[1]))
+        bl_i = (int(bl[0]), int(bl[1]))
 
-            # Scaled ROI
-            roi_height = int(top_right_corner[0] - top_left_corner[0])
-            roi_width = int(bottom_left_corner[1] - top_left_corner[1])
-            overlay_roi = overlay[int(top_left_corner[1]):int(top_left_corner[1] + roi_width),
-                                  int(top_left_corner[0]):int(top_left_corner[0] + roi_height)]
+        cv2.line(left_display, tl_i, tr_i, base_color, line_thickness)
+        cv2.line(left_display, bl_i, br_i, base_color, line_thickness)
+        draw_vertical_line(left_display, bl, tl, base_color, line_thickness)
+        draw_vertical_line(left_display, br, tr, base_color, line_thickness)
 
-            if obj.mask.is_init():
-                overlay_roi[obj.mask.numpy() != 0] = base_color
+        if obj.mask.is_init():
+            if overlay is None:
+                overlay = left_display.copy()
+            roi_h = tr_i[0] - tl_i[0]
+            roi_w = bl_i[1] - tl_i[1]
+            overlay_roi = overlay[tl_i[1]:tl_i[1] + roi_w, tl_i[0]:tl_i[0] + roi_h]
+            overlay_roi[obj.mask.numpy() != 0] = base_color
+            has_mask = True
 
-            # Display Object label as text
-            position_image = get_image_position(obj.bounding_box_2d, img_scale)
-            text_position = (int(position_image[0] - 20), int(position_image[1] - 12))
-            text = "class " + str(obj.raw_label)
-            text_color = (255, 255, 255, 255)
-            cv2.putText(left_display, text, text_position, cv2.FONT_HERSHEY_COMPLEX_SMALL, 0.5, text_color, 1)
+        position_image = get_image_position(obj.bounding_box_2d, img_scale)
+        text_position = (int(position_image[0] - 20), int(position_image[1] - 12))
+        cv2.putText(left_display, "class " + str(obj.raw_label),
+                    text_position, cv2.FONT_HERSHEY_COMPLEX_SMALL, 0.5, text_color, 1)
 
-            # Diplay Object distance to camera as text
-            if np.isfinite(obj.position[2]):
-                text = str(round(abs(obj.position[2]), 1)) + "M"
-                text_position = (int(position_image[0] - 20), int(position_image[1]))
-                cv2.putText(left_display, text, text_position, cv2.FONT_HERSHEY_COMPLEX_SMALL, 0.5, text_color, 1)
+        if np.isfinite(obj.position[2]):
+            cv2.putText(left_display, str(round(abs(obj.position[2]), 1)) + "M",
+                        (int(position_image[0] - 20), int(position_image[1])),
+                        cv2.FONT_HERSHEY_COMPLEX_SMALL, 0.5, text_color, 1)
 
-    # Here, overlay is as the left image, but with opaque masks on each detected objects
-    cv2.addWeighted(left_display, 0.7, overlay, 0.3, 0.0, left_display)
+    if has_mask:
+        cv2.addWeighted(left_display, 0.7, overlay, 0.3, 0.0, left_display)
 
 
 # ----------------------------------------------------------------------
