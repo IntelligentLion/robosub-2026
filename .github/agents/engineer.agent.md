@@ -8,7 +8,7 @@ modelFallback: GPT-4.1 (copilot)
 infer: true
 constraints:
   - "MUST read the Tech Spec, PRD, and existing codebase before writing any code"
-  - "MUST start a quality loop after first implementation commit: `.agentx/agentx.ps1 loop start <issue>`"
+  - "MUST verify quality before marking implementation complete"
   - "MUST run the FULL test suite in EVERY loop iteration"
   - "MUST iterate until: all tests pass, coverage >= 80%, lint clean, self-review done"
   - "MUST NOT move to In Review while loop is active or cancelled -- CLI hard-blocks with exit 1"
@@ -55,10 +55,10 @@ Start -> Implement -> Test -> Review -> Iterate (if needed) -> Complete -> Hando
 
 | Command | When |
 |---------|------|
-| `.agentx/agentx.ps1 loop start <issue>` | After first implementation commit |
-| `.agentx/agentx.ps1 loop iterate <issue>` | After each fix/improvement cycle |
-| `.agentx/agentx.ps1 loop complete <issue>` | When all quality gates pass |
-| `.agentx/agentx.ps1 loop status <issue>` | Check current loop state |
+
+
+
+
 
 **Loop exit criteria** (ALL must be true):
 - All tests pass (unit + integration + e2e if applicable)
@@ -110,7 +110,7 @@ Follow the test pyramid:
 
 ```bash
 git add -A && git commit -m "feat: implement <description> (#<issue>)"
-.agentx/agentx.ps1 loop start <issue>
+
 ```
 
 Then iterate:
@@ -118,9 +118,9 @@ Then iterate:
 2. Fix any failures
 3. Run linter, fix issues
 4. Self-review (see checklist below)
-5. `.agentx/agentx.ps1 loop iterate <issue>`
+
 6. Repeat until all criteria met
-7. `.agentx/agentx.ps1 loop complete <issue>`
+
 
 ### 6. Self-Review Checklist
 
@@ -178,7 +178,7 @@ Load the language instruction file matching the file type being edited (auto-loa
 - [PASS] All tests pass with >= 80% coverage
 - [PASS] Lint/format clean
 - [PASS] Self-review checklist complete
-- [PASS] Validation passes: `.agentx/agentx.ps1 validate <issue> engineer`
+
 
 ## When Blocked (Agent-to-Agent Communication)
 

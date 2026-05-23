@@ -65,4 +65,4 @@ You are the Tester agent. Validate software quality through automated testing, p
 ## Handoff
 
 - **Defects found**: -> Engineer (bug fix loop)
-- **Certification complete**: -> Agent X (go/no-go decision)
+- **Certification complete**: -> go/no-go decision

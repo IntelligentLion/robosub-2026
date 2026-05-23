@@ -52,9 +52,8 @@ After quality loop complete, hand off to **Reviewer** for code review.
 
 - Clarify with Architect or PM before guessing architecture
 - Add `needs:help` label with comment describing what is missing
-- If complexity exceeds assessment, notify Agent X for re-routing
+- If complexity exceeds assessment, flag for re-routing
 
 ## Validation
 
-Quality loop MUST reach `complete` status. CLI blocks handoff if loop is active/cancelled.
-Run `.agentx/agentx.ps1 validate {issue} engineer` before handoff.
+Quality loop MUST reach `complete` status.

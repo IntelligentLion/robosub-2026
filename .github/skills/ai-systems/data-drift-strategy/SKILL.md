@@ -2,7 +2,7 @@
 name: "data-drift-strategy"
 description: 'Design strategies to detect, monitor, and remediate data drift in ML/AI pipelines. Use when building data quality monitoring, schema drift detection, feature distribution tracking, or establishing data governance for model inputs.'
 metadata:
-  author: "AgentX"
+ 
   version: "1.0.0"
   created: "2025-06-15"
   updated: "2025-06-15"

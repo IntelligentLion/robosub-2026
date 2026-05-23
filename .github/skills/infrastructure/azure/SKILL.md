@@ -2,7 +2,7 @@
 name: "azure"
 description: 'Build scalable, secure, and reliable applications on Microsoft Azure cloud services. Use when deploying to Azure, configuring Azure compute/storage/database services, setting up Azure networking, implementing Azure security, or managing Azure costs and monitoring.'
 metadata:
- author: "AgentX"
+
  version: "1.0.0"
  created: "2025-01-15"
  updated: "2026-02-11"
@@ -114,8 +114,8 @@ az group create --name rg-myapp-prod --location eastus --tags Environment=Produc
 ```bash
 # Create OpenAI Resource
 az cognitiveservices account create \
- --name "ai-agentx-dev" \
- --resource-group "rg-agentx-dev-eastus-001" \
+ --name "ai-project-dev" \
+ --resource-group "rg-project-dev-eastus-001" \
  --location "eastus2" \
  --kind "OpenAI" \
  --sku "S0"

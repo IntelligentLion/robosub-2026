@@ -33,7 +33,7 @@ handoffs:
     send: false
     context: "Tester creates bug issues for each defect, Engineer fixes them"
   - label: "Certification Complete -> Done"
-    agent: agent-x
+
     prompt: "Testing certification complete. Ready for go/no-go decision."
     send: false
 tools:

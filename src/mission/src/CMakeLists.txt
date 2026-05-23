@@ -15,6 +15,7 @@ find_package(behaviortree_cpp_v3 REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 find_package(auv_msgs REQUIRED)
+find_package(geometry_msgs REQUIRED)
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
@@ -34,15 +35,13 @@ include_directories(
 
 add_executable(bt_runner
   ${CMAKE_CURRENT_SOURCE_DIR}/main.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/nodes/rotate.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/nodes/move_to.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/nodes/detect_object.cpp
 )
 
 ament_target_dependencies(bt_runner
   rclcpp
   behaviortree_cpp_v3
   std_msgs
+  geometry_msgs
   ament_index_cpp
   auv_msgs
 )

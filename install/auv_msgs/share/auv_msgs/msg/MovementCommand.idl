@@ -1,1 +1,34 @@
-/home/robosub/UPDATEDCODE/build/auv_msgs/rosidl_adapter/auv_msgs/msg/MovementCommand.idl
+// generated from rosidl_adapter/resource/msg.idl.em
+// with input from auv_msgs/msg/MovementCommand.msg
+// generated code does not contain a copyright notice
+
+
+module auv_msgs {
+  module msg {
+    @verbatim (language="comment", text=
+      "Modular movement command for thruster control" "\n"
+      "" "\n"
+      "Supported commands:" "\n"
+      "  submerge       - move downward          (speed: 0.0–1.0)" "\n"
+      "  emerge         - move upward            (speed: 0.0–1.0)" "\n"
+      "  surge_forward  - move forward           (speed: 0.0–1.0)" "\n"
+      "  surge_backward - move backward          (speed: 0.0–1.0)" "\n"
+      "  strafe_left    - move left              (speed: 0.0–1.0)" "\n"
+      "  strafe_right   - move right             (speed: 0.0–1.0)" "\n"
+      "  rotate_cw      - yaw clockwise          (speed: 0.0–1.0)" "\n"
+      "  rotate_ccw     - yaw counter-clockwise  (speed: 0.0–1.0)" "\n"
+      "  stop           - halt all movement" "\n"
+      "  depth_hold     - maintain current depth")
+    struct MovementCommand {
+      string command;
+
+      @verbatim (language="comment", text=
+        "0.0 to 1.0 normalized intensity")
+      float speed;
+
+      @verbatim (language="comment", text=
+        "seconds (0 = until next command)")
+      float duration;
+    };
+  };
+};

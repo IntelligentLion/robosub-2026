@@ -2,7 +2,7 @@
 name: "model-drift-management"
 description: 'Detect, monitor, and manage model drift in production ML/AI systems. Use when building model monitoring pipelines, implementing drift detection algorithms, designing change management workflows for model updates, or establishing model governance policies.'
 metadata:
-  author: "AgentX"
+ 
   version: "1.0.0"
   created: "2025-06-15"
   updated: "2025-06-15"

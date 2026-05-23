@@ -1,1 +1,4 @@
-/home/robosub/UPDATEDCODE/src/auv_msgs/msg/BehaviorStatus.msg
+builtin_interfaces/Time stamp
+string action_name
+string status
+string reason

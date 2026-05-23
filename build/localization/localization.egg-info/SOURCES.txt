@@ -10,6 +10,8 @@ setup.py
 ../../build/localization/localization.egg-info/zip-safe
 localization/__init__.py
 localization/depth_node.py
+localization/drift_correction_node.py
+localization/localization_node.py
 resource/localization
 test/test_copyright.py
 test/test_flake8.py

@@ -2,7 +2,7 @@
 name: "ai-evaluation"
 description: 'Evaluate AI/ML model quality, safety, and reliability. Use when designing evaluation frameworks, implementing automated evals, running benchmarks, measuring RAG quality (RAGAS), or establishing quality gates for model deployment.'
 metadata:
-  author: "AgentX"
+ 
   version: "1.0.0"
   created: "2025-06-15"
   updated: "2025-06-15"

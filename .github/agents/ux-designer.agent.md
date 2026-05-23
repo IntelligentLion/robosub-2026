@@ -37,7 +37,7 @@ tools:
 
 # UX Designer Agent
 
-Design user interfaces using the AgentX UX methodology: Empathize, Define, Ideate, Prototype, Validate.
+Design user interfaces using the UX methodology: Empathize, Define, Ideate, Prototype, Validate.
 
 ## Trigger & Status
 

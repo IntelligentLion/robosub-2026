@@ -57,7 +57,7 @@ Mark progress using the todo list tool.
 
 ---
 
-## AgentX-Specific Patterns
+## Additional Patterns
 
 ### Agent Definitions
 

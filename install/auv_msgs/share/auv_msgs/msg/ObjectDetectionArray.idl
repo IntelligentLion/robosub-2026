@@ -1,1 +1,13 @@
-/home/robosub/UPDATEDCODE/build/auv_msgs/rosidl_adapter/auv_msgs/msg/ObjectDetectionArray.idl
+// generated from rosidl_adapter/resource/msg.idl.em
+// with input from auv_msgs/msg/ObjectDetectionArray.msg
+// generated code does not contain a copyright notice
+
+#include "auv_msgs/msg/ObjectDetection.idl"
+
+module auv_msgs {
+  module msg {
+    struct ObjectDetectionArray {
+      sequence<auv_msgs::msg::ObjectDetection> detections;
+    };
+  };
+};

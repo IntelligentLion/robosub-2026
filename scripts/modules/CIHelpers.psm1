@@ -1,7 +1,7 @@
 # ------------------------------------------------------------------
-# AgentX Shared Module: CIHelpers
+# Shared Module: CIHelpers
 # ------------------------------------------------------------------
-# Common CI/CD helper functions used across AgentX scripts.
+# Common CI/CD helper functions.
 # Provides platform-agnostic output formatting for GitHub Actions
 # and local terminal environments.
 #

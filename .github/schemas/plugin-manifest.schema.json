@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "AgentX Plugin Manifest",
-  "description": "Defines an installable AgentX plugin with commands, scripts, and metadata.",
+ "title": "Plugin Manifest",
+  "description": "Defines an installable plugin with commands, scripts, and metadata.",
   "type": "object",
   "required": ["name", "version", "description", "type", "entry"],
   "properties": {

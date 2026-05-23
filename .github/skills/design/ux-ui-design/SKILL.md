@@ -2,12 +2,12 @@
 name: "ux-ui-design"
 description: 'Design user experiences with wireframing, prototyping, user flows, accessibility, and production-ready HTML prototypes. Use when creating wireframes, building interactive prototypes, designing user flows, implementing accessibility standards, or producing HTML/CSS design deliverables.'
 metadata:
- author: "AgentX"
+
  version: "2.0.0"
  created: "2025-01-15"
  updated: "2025-01-15"
 compatibility:
- agents: ["ux-designer", "agent-x"]
+ agents: ["ux-designer"]
  frameworks: ["html-css", "figma", "tailwind", "bootstrap"]
  output-formats: ["html", "css", "markdown", "mermaid"]
 ---

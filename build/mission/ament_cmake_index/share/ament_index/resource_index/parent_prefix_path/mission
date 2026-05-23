@@ -1,1 +1,1 @@
-/home/robosub/UPDATEDCODE/install/auv_msgs:/home/robosub/ros2_ws/install/zed_ros2:/home/robosub/ros2_ws/install/zed_wrapper:/home/robosub/ros2_ws/install/zed_components:/opt/ros/humble
+/home/myen/robosub/robosub-2026/install/vision:/home/myen/robosub/robosub-2026/install/mavlink_thruster_control:/home/myen/robosub/robosub-2026/install/localization:/home/myen/robosub/robosub-2026/install/control:/home/myen/robosub/robosub-2026/install/auv_msgs:/opt/ros/jazzy

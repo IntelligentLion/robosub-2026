@@ -34,6 +34,7 @@
 #include "auv_msgs/msg/behavior_status.hpp"
 #include "auv_msgs/msg/movement_command.hpp"
 #include "auv_msgs/msg/depth_info.hpp"
+#include "geometry_msgs/msg/pose_stamped.hpp"
 #include "behaviortree_cpp_v3/action_node.h"
 #include "behaviortree_cpp_v3/loggers/bt_cout_logger.h"
 
@@ -49,7 +50,7 @@ using TimePoint   = SteadyClock::time_point;
 // ── Confidence thresholds ──
 // DETECT_CONFIDENCE – used when *deciding* whether an object is present.
 // Must be high to avoid random movements from misclassifications.
-constexpr float DETECT_CONFIDENCE = 0.20f;
+constexpr float DETECT_CONFIDENCE = 0.80f;
 
 // TRACK_CONFIDENCE – used during active feedback-loop movement toward an
 // already-confirmed object.  Slightly lower so we don't lose track when
@@ -222,6 +223,40 @@ private:
 };
 
 // =====================================================================
+//  LocalizationState – thread-safe store for fused pose
+// =====================================================================
+
+class LocalizationState
+{
+public:
+    void update(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        x_   = msg->pose.position.x;
+        y_   = msg->pose.position.y;
+        z_   = msg->pose.position.z;
+
+        auto &q = msg->pose.orientation;
+        yaw_ = std::atan2(
+            2.0f * (q.w * q.z + q.x * q.y),
+            1.0f - 2.0f * (q.y * q.y + q.z * q.z));
+
+        received_ = true;
+    }
+
+    float x()   const { std::lock_guard<std::mutex> lk(mtx_); return x_; }
+    float y()   const { std::lock_guard<std::mutex> lk(mtx_); return y_; }
+    float z()   const { std::lock_guard<std::mutex> lk(mtx_); return z_; }
+    float yaw() const { std::lock_guard<std::mutex> lk(mtx_); return yaw_; }
+    bool  received() const { std::lock_guard<std::mutex> lk(mtx_); return received_; }
+
+private:
+    mutable std::mutex mtx_;
+    float x_ = 0.0f, y_ = 0.0f, z_ = 0.0f, yaw_ = 0.0f;
+    bool received_ = false;
+};
+
+// =====================================================================
 //  Forward declarations / globals
 // =====================================================================
 
@@ -232,6 +267,7 @@ std::shared_ptr<MovementPublisher>       g_movement_pub;
 std::shared_ptr<BehaviorStatusPublisher> g_behavior_status_node;
 std::shared_ptr<VisionState>             g_vision;
 std::shared_ptr<DepthState>              g_depth;
+std::shared_ptr<LocalizationState>       g_localization;
 
 inline double elapsed_s(const TimePoint &start)
 {
@@ -342,6 +378,27 @@ private:
 };
 
 // =====================================================================
+//  LocalizationSubscriber – bridges localization/pose → LocalizationState
+// =====================================================================
+
+class LocalizationSubscriber : public rclcpp::Node
+{
+public:
+    explicit LocalizationSubscriber(std::shared_ptr<LocalizationState> ls)
+        : Node("mission_localization_sub"), ls_(ls)
+    {
+        sub_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
+            "localization/pose", 10,
+            std::bind(&LocalizationSubscriber::cb, this, std::placeholders::_1));
+    }
+
+private:
+    void cb(const geometry_msgs::msg::PoseStamped::SharedPtr msg) { ls_->update(msg); }
+    rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr sub_;
+    std::shared_ptr<LocalizationState> ls_;
+};
+
+// =====================================================================
 //  BehaviorStatusPublisher
 // =====================================================================
 
@@ -389,52 +446,44 @@ static void publish_status(const std::string &action,
 // =====================================================================
 
 // ─── apply_centering ─────────────────────────────────────────────────
-//  Publishes corrections to centre the detection in frame.
+//  Adjusts heading and depth to centre the detection in frame.
 //  Returns true if already within tolerance.
+//
+//  Only adjusts yaw/strafe OR depth per call to avoid sending multiple
+//  conflicting MovementCommands within the same control tick.
+//  Horizontal correction takes priority since it affects aiming more.
 static bool apply_centering(const Detection &det)
 {
     float ex = det.center_x - 0.5f;   // + = object right of centre
     float ey = det.center_y - 0.5f;   // + = object below centre
-    bool centred = true;
 
-    // Horizontal – rotate for coarse, strafe for fine
-    if (std::abs(ex) > CENTER_TOL)
+    bool h_ok = std::abs(ex) <= CENTER_TOL;
+    bool v_ok = std::abs(ey) <= CENTER_TOL;
+
+    if (h_ok && v_ok)
     {
-        centred = false;
+        return true;
+    }
+
+    // Prioritise horizontal correction
+    if (!h_ok)
+    {
         float speed = std::clamp(std::abs(ex) * 2.0f, 0.10f, 0.45f);
         if (std::abs(ex) > 0.20f)
-        {
-            // coarse: rotate
             g_movement_pub->publish_command(
                 ex > 0 ? "rotate_cw" : "rotate_ccw", speed, 0);
-        }
         else
-        {
-            // fine: strafe
             g_movement_pub->publish_command(
                 ex > 0 ? "strafe_right" : "strafe_left", speed, 0);
-        }
     }
     else
     {
-        // zero out rotational / strafe residual
-        g_movement_pub->publish_command("rotate_cw", 0.0f, 0);
-    }
-
-    // Vertical – depth adjustment
-    if (std::abs(ey) > CENTER_TOL)
-    {
-        centred = false;
         float speed = std::clamp(std::abs(ey) * 1.5f, 0.08f, 0.30f);
         g_movement_pub->publish_command(
             ey > 0 ? "submerge" : "emerge", speed, 0);
     }
-    else
-    {
-        g_movement_pub->publish_command("submerge", 0.0f, 0);   // neutral depth
-    }
 
-    return centred;
+    return false;
 }
 
 // ─── search_for ──────────────────────────────────────────────────────
@@ -700,20 +749,20 @@ BT::NodeStatus Detect_gate_at_front_of_sub()
 
     // Check several frames to be sure
     int hits = 0;
-    for (int i = 0; i < 1 && rclcpp::ok(); ++i)
+    for (int i = 0; i < 5 && rclcpp::ok(); ++i)
     {
         if (g_vision->has(Labels::GATE, DETECT_CONFIDENCE))
             ++hits;
-        std::this_thread::sleep_for(1000ms);
+        std::this_thread::sleep_for(200ms);
     }
 
-    if (hits >= 1)
+    if (hits >= 3)
     {
-        cout << "[Detect_gate] Gate DETECTED (" << hits << "/8 frames)" << endl;
+        cout << "[Detect_gate] Gate DETECTED (" << hits << "/5 frames)" << endl;
         publish_status("Detect_gate", "SUCCESS");
         return BT::NodeStatus::SUCCESS;
     }
-    cout << "[Detect_gate] Gate NOT detected (" << hits << "/8 frames)" << endl;
+    cout << "[Detect_gate] Gate NOT detected (" << hits << "/5 frames)" << endl;
     publish_status("Detect_gate", "FAILURE", "Gate not in view");
     return BT::NodeStatus::FAILURE;
 }
@@ -1450,9 +1499,10 @@ int main(int argc, char **argv)
 {
     rclcpp::init(argc, argv);
 
-    // ── Shared vision and depth state ──
-    g_vision = std::make_shared<VisionState>();
-    g_depth  = std::make_shared<DepthState>();
+    // ── Shared vision, depth, and localization state ──
+    g_vision       = std::make_shared<VisionState>();
+    g_depth        = std::make_shared<DepthState>();
+    g_localization = std::make_shared<LocalizationState>();
 
     // ── Blackboard (still used for preferred_side port wiring) ──
     auto blackboard = BT::Blackboard::create();
@@ -1551,16 +1601,20 @@ int main(int argc, char **argv)
         factory.registerBehaviorTreeFromFile(bt_xml_dir + tf);
     }
 
-    // ── Spin vision + depth subscribers in background ──
-    auto vision_sub = std::make_shared<VisionSubscriber>(g_vision);
-    auto depth_sub  = std::make_shared<DepthSubscriber>(g_depth);
+    // ── Spin ROS nodes in background ──
+    g_movement_pub         = std::make_shared<MovementPublisher>();
+    g_behavior_status_node = std::make_shared<BehaviorStatusPublisher>();
+
+    auto vision_sub       = std::make_shared<VisionSubscriber>(g_vision);
+    auto depth_sub        = std::make_shared<DepthSubscriber>(g_depth);
+    auto localization_sub = std::make_shared<LocalizationSubscriber>(g_localization);
     rclcpp::executors::SingleThreadedExecutor sub_executor;
     sub_executor.add_node(vision_sub);
     sub_executor.add_node(depth_sub);
+    sub_executor.add_node(localization_sub);
+    sub_executor.add_node(g_movement_pub);
+    sub_executor.add_node(g_behavior_status_node);
     std::thread ros_spin_thread([&]() { sub_executor.spin(); });
-
-    g_movement_pub         = std::make_shared<MovementPublisher>();
-    g_behavior_status_node = std::make_shared<BehaviorStatusPublisher>();
 
     cout << "=== SHRUB – Vision-integrated mission starting ===" << endl;
     cout << "  Detection confidence threshold : " << DETECT_CONFIDENCE << endl;
@@ -1588,8 +1642,10 @@ int main(int argc, char **argv)
     g_behavior_status_node.reset();
     g_vision.reset();
     g_depth.reset();
+    g_localization.reset();
     vision_sub.reset();
     depth_sub.reset();
+    localization_sub.reset();
 
     return 0;
 }

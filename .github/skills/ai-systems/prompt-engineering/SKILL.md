@@ -2,12 +2,12 @@
 name: "prompt-engineering"
 description: 'Write effective prompts for AI coding agents. Use when crafting system prompts, implementing chain-of-thought reasoning, building few-shot examples, adding guardrails, configuring tool use, or designing agentic prompt patterns. Covers CoT, few-shot, guardrails, and function calling.'
 metadata:
- author: "AgentX"
+
  version: "1.0.0"
  created: "2025-01-15"
  updated: "2025-01-15"
 compatibility:
- frameworks: ["agentx", "copilot", "openai", "anthropic"]
+ frameworks: ["openai", "anthropic"]
 ---
 
 # Prompt Engineering
@@ -237,8 +237,6 @@ Rate your prompt before using it:
 - [OpenAI Prompt Engineering Guide](https://platform.openai.com/docs/guides/prompt-engineering)
 - [Anthropic Prompt Engineering](https://docs.anthropic.com/en/docs/build-with-claude/prompt-engineering)
 - [Google Prompt Engineering](https://ai.google.dev/docs/prompt_best_practices)
-- [AgentX Agent Definitions](../../../../.github/agents/)
-- [AgentX Instruction Files](../../../../.github/instructions/)
 
 ---
 

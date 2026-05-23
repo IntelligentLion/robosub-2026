@@ -1,7 +1,7 @@
 #!/usr/bin/env pwsh
 <#
 .SYNOPSIS
- Validate frontmatter in AgentX instruction, agent, and skill files against JSON schemas.
+ Validate frontmatter in instruction, agent, and skill files against JSON schemas.
 
 .DESCRIPTION
  Parses YAML frontmatter from .instructions.md, .agent.md, and SKILL.md files,
@@ -142,7 +142,7 @@ function Test-SkillFile([string]$FilePath) {
 # -- Main ------------------------------------------------
 
 Write-Host ""
-Write-Host " AgentX Frontmatter Validation" -ForegroundColor Cyan
+Write-Host " Frontmatter Validation" -ForegroundColor Cyan
 Write-Host " ============================================" -ForegroundColor DarkGray
 Write-Host ""
 

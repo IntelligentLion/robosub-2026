@@ -68,7 +68,7 @@ For every interactive element, document:
 
 ## HTML/CSS Prototypes
 
-**All prototypes MUST be production-ready HTML/CSS.** This is mandatory per AgentX UX Designer role.
+**All prototypes MUST be production-ready HTML/CSS.** This is mandatory per UX Designer role.
 
 ### Prototype Structure
 

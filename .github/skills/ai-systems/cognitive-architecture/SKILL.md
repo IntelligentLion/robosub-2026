@@ -2,7 +2,7 @@
 name: "cognitive-architecture"
 description: 'Design and implement the "brain" of AI agents. Use when defining agent memory strategy (short/long-term), building RAG pipelines (knowledge retrieval), or designing state management systems.'
 metadata:
- author: "AgentX"
+
  version: "1.0.0"
  created: "2026-02-11"
  updated: "2026-02-11"

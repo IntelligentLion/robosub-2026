@@ -1,7 +1,7 @@
 # ------------------------------------------------------------------
-# AgentX Shared Module: SecurityHelpers
+# Shared Module: SecurityHelpers
 # ------------------------------------------------------------------
-# Common security validation functions used across AgentX scripts.
+# Common security validation functions.
 # Provides reusable checks for secrets detection, command blocking,
 # and dependency auditing.
 #

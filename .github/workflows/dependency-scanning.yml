@@ -251,7 +251,7 @@ jobs:
             ${hasFailures ? '[WARN] **Action Required**: Review vulnerability reports in workflow artifacts.' : ''}
 
             ---
-            *Dependency scanning by AgentX*`;
+            Dependency scanning`;
 
             await github.rest.issues.createComment({
               owner: context.repo.owner,

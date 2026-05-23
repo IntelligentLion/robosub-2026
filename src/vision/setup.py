@@ -12,9 +12,9 @@ setup(
     zip_safe=True,
     entry_points={
         'console_scripts': [
-            'detector = vision.detector:main', #custom model
+            'detector = vision.detector:main',
+            'bottom_camera = vision.bottom_camera_node:main',
             'behavior_status_listener = vision.movement:main',
-            #'detector = vision.obj_det:main', #preoptimized zed sample model
         ],
     },
 )

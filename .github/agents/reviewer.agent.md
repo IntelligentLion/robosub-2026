@@ -60,7 +60,7 @@ Review implementations for quality, correctness, security, and spec conformance.
 **This is a hard gate -- do not proceed if the loop is not complete.**
 
 ```bash
-.agentx/agentx.ps1 loop status <issue>
+
 ```
 
 - Status MUST be `complete`
