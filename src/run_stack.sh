@@ -40,7 +40,7 @@ fi
 
 if [[ ! -f "${WORKSPACE_DIR}/install/setup.bash" ]]; then
   echo "Workspace not built yet. Run:"
-  echo "  cd ${WORKSPACE_DIR} && source /opt/ros/humble/setup.bash && colcon build --symlink-install --packages-select auv_msgs vision mission mavlink_thruster_control localization"
+  echo "  cd ${WORKSPACE_DIR} && source /opt/ros/humble/setup.bash && colcon build --symlink-install --packages-select auv_msgs vision mission mavlink_thruster_control localization control"
   exit 1
 fi
 
@@ -80,13 +80,25 @@ if ! kill -0 "${PIDS[-1]}" 2>/dev/null; then
   echo "[WARN] Thruster controller failed to start – continuing in degraded mode"
 fi
 
-# ─── 2. Behavior tree ───────────────────────────────────────────────
+# ─── 2. Localization node ──────────────────────────────────────────
+echo "Starting localization node..."
+ros2 run localization localization_node &
+PIDS+=($!)
+sleep 1
+
+# ─── 3. Autonomous controller ─────────────────────────────────────
+echo "Starting autonomous controller..."
+ros2 run control autonomous_controller &
+PIDS+=($!)
+sleep 1
+
+# ─── 4. Behavior tree ───────────────────────────────────────────────
 echo "Starting behavior tree..."
 ros2 run mission bt_runner &
 PIDS+=($!)
 sleep 1
 
-# ─── 3. Vision detector ─────────────────────────────────────────────
+# ─── 5. Vision detector ─────────────────────────────────────────────
 echo "Starting vision detector..."
 if [[ "${USE_ONNX}" == true ]]; then
   ros2 run vision detector -- \
@@ -104,7 +116,7 @@ fi
 PIDS+=($!)
 sleep 1
 
-# ─── 4. Depth sensing node ──────────────────────────────────────────
+# ─── 6. Depth sensing node ──────────────────────────────────────────
 echo "Starting depth node (stop distance: ${STOP_DIST} m)..."
 ros2 run localization depth_node -- --stop_distance "${STOP_DIST}" &
 PIDS+=($!)

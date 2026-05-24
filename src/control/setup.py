@@ -15,11 +15,12 @@ setup(
     zip_safe=True,
     maintainer='robosub',
     maintainer_email='robosub@robosub.com',
-    description='TODO: Package description',
+    description='Autonomous navigation controller for RoboSub AUV',
     license='TODO: License declaration',
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
+            'autonomous_controller = control.autonomous_controller:main',
         ],
     },
 )

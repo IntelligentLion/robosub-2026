@@ -18,6 +18,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/BehaviorStatus.msg"
   "msg/MovementCommand.msg"
   "msg/DepthInfo.msg"
+  "msg/NavigationCommand.msg"
   DEPENDENCIES geometry_msgs builtin_interfaces
 )
 

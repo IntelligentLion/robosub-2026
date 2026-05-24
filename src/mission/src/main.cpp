@@ -33,6 +33,7 @@
 #include "auv_msgs/msg/object_detection_array.hpp"
 #include "auv_msgs/msg/behavior_status.hpp"
 #include "auv_msgs/msg/movement_command.hpp"
+#include "auv_msgs/msg/navigation_command.hpp"
 #include "auv_msgs/msg/depth_info.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "behaviortree_cpp_v3/action_node.h"
@@ -261,9 +262,11 @@ private:
 // =====================================================================
 
 class MovementPublisher;
+class NavigationPublisher;
 class BehaviorStatusPublisher;
 
 std::shared_ptr<MovementPublisher>       g_movement_pub;
+std::shared_ptr<NavigationPublisher>     g_nav_pub;
 std::shared_ptr<BehaviorStatusPublisher> g_behavior_status_node;
 std::shared_ptr<VisionState>             g_vision;
 std::shared_ptr<DepthState>              g_depth;
@@ -314,12 +317,90 @@ private:
 };
 
 // =====================================================================
+//  NavigationPublisher – publishes auv_msgs::msg::NavigationCommand
+//  for the autonomous controller (localization-backed closed-loop)
+// =====================================================================
+
+class NavigationPublisher : public rclcpp::Node
+{
+public:
+    NavigationPublisher() : Node("navigation_publisher")
+    {
+        pub_ = this->create_publisher<auv_msgs::msg::NavigationCommand>(
+            "navigation_command", 10);
+    }
+
+    void publish(const std::string &mode,
+                 const std::string &target_label = "",
+                 float speed = 0.5f,
+                 float approach_dist = 0.0f)
+    {
+        auto msg = auv_msgs::msg::NavigationCommand();
+        msg.mode          = mode;
+        msg.target_label  = target_label;
+        msg.speed         = speed;
+        msg.approach_dist = approach_dist;
+        pub_->publish(msg);
+    }
+
+    void publish_waypoint(float x, float y, float z, float yaw,
+                          float speed = 0.5f)
+    {
+        auto msg = auv_msgs::msg::NavigationCommand();
+        msg.mode       = "waypoint";
+        msg.target_x   = x;
+        msg.target_y   = y;
+        msg.target_z   = z;
+        msg.target_yaw = yaw;
+        msg.speed      = speed;
+        pub_->publish(msg);
+    }
+
+    void station_keep(float speed = 0.5f)
+    {
+        publish("station_keep", "", speed);
+    }
+
+    void track(const std::string &label, float speed = 0.5f,
+               float approach_dist = 0.0f)
+    {
+        publish("track_object", label, speed, approach_dist);
+    }
+
+    void search(const std::string &label, float speed = 0.25f)
+    {
+        publish("search", label, speed);
+    }
+
+    void idle()
+    {
+        publish("idle");
+    }
+
+    void heading_hold(float yaw, float speed = 0.5f)
+    {
+        auto msg = auv_msgs::msg::NavigationCommand();
+        msg.mode       = "heading_hold";
+        msg.target_yaw = yaw;
+        msg.speed      = speed;
+        pub_->publish(msg);
+    }
+
+private:
+    rclcpp::Publisher<auv_msgs::msg::NavigationCommand>::SharedPtr pub_;
+};
+
+// =====================================================================
 //  execute_movement – timed movement (fire-and-forget, blocks BT tick)
 // =====================================================================
 
 static void execute_movement(const std::string &command,
                              float speed, float duration_sec)
 {
+    // Pause the autonomous controller so it doesn't fight our
+    // direct thruster commands during timed movements.
+    if (g_nav_pub) g_nav_pub->idle();
+
     if (g_movement_pub)
         g_movement_pub->publish_command(command, speed, duration_sec);
 
@@ -329,6 +410,8 @@ static void execute_movement(const std::string &command,
             std::chrono::milliseconds(
                 static_cast<int>(duration_sec * 1000)));
         if (g_movement_pub) g_movement_pub->stop();
+        // After timed movement, engage station-keep to hold position
+        if (g_nav_pub) g_nav_pub->station_keep();
     }
 }
 
@@ -488,46 +571,55 @@ static bool apply_centering(const Detection &det)
 
 // ─── search_for ──────────────────────────────────────────────────────
 //  Rotate slowly until *label* is detected above DETECT_CONFIDENCE.
+//  Delegates to the autonomous controller for localization-backed
+//  heading stability during rotation.
 static bool search_for(const std::string &label,
                        float timeout_s = TIMEOUT_SEARCH)
 {
+    if (g_nav_pub) g_nav_pub->search(label, 0.25f);
+
     auto t0 = SteadyClock::now();
     while (rclcpp::ok() && elapsed_s(t0) < timeout_s)
     {
         if (g_vision->has(label, DETECT_CONFIDENCE))
         {
-            g_movement_pub->stop();
+            if (g_nav_pub) g_nav_pub->station_keep();
             return true;
         }
-        g_movement_pub->rotate_cw(0.25f);
         std::this_thread::sleep_for(CTRL_PERIOD);
     }
-    g_movement_pub->stop();
+    if (g_nav_pub) g_nav_pub->idle();
     return false;
 }
 
 // ─── centre_on ───────────────────────────────────────────────────────
 //  Adjust heading / strafe / depth until *label* is centred in frame.
+//  Uses the autonomous controller's track mode for localization-backed
+//  centering, with a vision feedback loop to confirm stability.
 static bool centre_on(const std::string &label,
                       float timeout_s = TIMEOUT_CENTER)
 {
+    if (g_nav_pub) g_nav_pub->track(label, 0.40f);
+
     auto t0 = SteadyClock::now();
-    int frames_centred = 0;      // require a few consecutive frames
+    int frames_centred = 0;
     while (rclcpp::ok() && elapsed_s(t0) < timeout_s)
     {
         auto det = g_vision->get(label, TRACK_CONFIDENCE);
         if (!det)
         {
-            g_movement_pub->stop();
             frames_centred = 0;
             std::this_thread::sleep_for(CTRL_PERIOD);
             continue;
         }
-        if (apply_centering(*det))
+
+        float ex = std::abs(det->center_x - 0.5f);
+        float ey = std::abs(det->center_y - 0.5f);
+        if (ex <= CENTER_TOL && ey <= CENTER_TOL)
         {
-            if (++frames_centred >= 4)      // ~0.4 s of stability
+            if (++frames_centred >= 4)
             {
-                g_movement_pub->stop();
+                if (g_nav_pub) g_nav_pub->station_keep();
                 return true;
             }
         }
@@ -537,25 +629,26 @@ static bool centre_on(const std::string &label,
         }
         std::this_thread::sleep_for(CTRL_PERIOD);
     }
-    g_movement_pub->stop();
+    if (g_nav_pub) g_nav_pub->idle();
     return false;
 }
 
 // ─── approach ────────────────────────────────────────────────────────
 //  Surge forward while keeping *label* centred.
+//  Uses the autonomous controller's track mode for closed-loop
+//  centering + approach with localization drift compensation.
 //
 //  Stop condition (whichever triggers first):
 //    1. Depth-based  – det.depth_m ≤ stop_distance_m from depth/info.
-//       This is the primary criterion when ZED 3D data is available.
 //    2. Bbox-based   – bbox_width ≥ target_w (fallback when depth=-1).
-//
-//  Speed is proportional to remaining depth distance when known, or to
-//  remaining bbox gap otherwise.
 static bool approach(const std::string &label,
                      float target_w  = APPROACH_W,
                      float timeout_s = TIMEOUT_APPROACH)
 {
     float stop_dist = g_depth ? g_depth->stop_distance_m() : -1.0f;
+    float eff_approach = (stop_dist > 0.0f) ? stop_dist : 1.5f;
+
+    if (g_nav_pub) g_nav_pub->track(label, 0.50f, eff_approach);
 
     auto t0 = SteadyClock::now();
     while (rclcpp::ok() && elapsed_s(t0) < timeout_s)
@@ -563,47 +656,25 @@ static bool approach(const std::string &label,
         auto det = g_vision->get(label, TRACK_CONFIDENCE);
         if (!det)
         {
-            g_movement_pub->stop();
             std::this_thread::sleep_for(CTRL_PERIOD);
             continue;
         }
 
-        // ── Stop condition ──────────────────────────────────────────
         bool depth_ok = (stop_dist > 0.0f && det->depth_m > 0.0f);
         if (depth_ok && det->depth_m <= stop_dist)
         {
-            // Depth sensing says we're close enough – stop.
-            g_movement_pub->stop();
+            if (g_nav_pub) g_nav_pub->station_keep();
             return true;
         }
         if (!depth_ok && det->bbox_width >= target_w)
         {
-            // No depth data; fall back to bbox width threshold.
-            g_movement_pub->stop();
+            if (g_nav_pub) g_nav_pub->station_keep();
             return true;
         }
 
-        // ── Centre while approaching ────────────────────────────────
-        apply_centering(*det);
-
-        // ── Surge speed – proportional to remaining distance ────────
-        float speed;
-        if (depth_ok)
-        {
-            // Scale speed by how far we still need to travel.
-            float remaining = std::max(0.0f, det->depth_m - stop_dist);
-            speed = std::clamp(remaining / std::max(stop_dist, 1.0f) * 0.50f, 0.12f, 0.50f);
-        }
-        else
-        {
-            float gap = target_w - det->bbox_width;
-            speed = std::clamp(gap * 3.0f, 0.15f, 0.50f);
-        }
-        g_movement_pub->surge_forward(speed);
-
         std::this_thread::sleep_for(CTRL_PERIOD);
     }
-    g_movement_pub->stop();
+    if (g_nav_pub) g_nav_pub->idle();
     return false;
 }
 
@@ -631,6 +702,7 @@ static bool pass_through(const std::string &label,
             if (++frames_gone >= 8)   // ~0.8 s without seeing it
             {
                 g_movement_pub->stop();
+                if (g_nav_pub) g_nav_pub->station_keep();
                 return true;
             }
         }
@@ -678,6 +750,7 @@ static bool centre_between(const std::string &label_a,
             if (++frames_ok >= 4)
             {
                 g_movement_pub->stop();
+                if (g_nav_pub) g_nav_pub->station_keep();
                 return true;
             }
         }
@@ -688,6 +761,7 @@ static bool centre_between(const std::string &label_a,
         std::this_thread::sleep_for(CTRL_PERIOD);
     }
     g_movement_pub->stop();
+    if (g_nav_pub) g_nav_pub->idle();
     return false;
 }
 
@@ -841,15 +915,14 @@ public:
     {
         cout << "[Reposition_left] Strafing left toward gate entrance …"
              << endl;
-        // Strafe left while keeping the gate visible
+        if (g_nav_pub) g_nav_pub->idle();
         auto t0 = SteadyClock::now();
         while (rclcpp::ok() && elapsed_s(t0) < 8.0)
         {
             auto det = g_vision->get(Labels::GATE, TRACK_CONFIDENCE);
             if (det && det->center_x > 0.55f)
             {
-                // Gate is now to our right → we're left of centre.  Done.
-                g_movement_pub->stop();
+                if (g_nav_pub) g_nav_pub->station_keep();
                 publish_status("Reposition_left", "SUCCESS");
                 return BT::NodeStatus::SUCCESS;
             }
@@ -857,7 +930,6 @@ public:
             std::this_thread::sleep_for(CTRL_PERIOD);
         }
         g_movement_pub->stop();
-        // Fallback
         execute_movement("strafe_left", 0.4f, 3.0f);
         publish_status("Reposition_left", "SUCCESS", "Fallback");
         return BT::NodeStatus::SUCCESS;
@@ -874,13 +946,14 @@ public:
     {
         cout << "[Reposition_right] Strafing right toward gate entrance …"
              << endl;
+        if (g_nav_pub) g_nav_pub->idle();
         auto t0 = SteadyClock::now();
         while (rclcpp::ok() && elapsed_s(t0) < 8.0)
         {
             auto det = g_vision->get(Labels::GATE, TRACK_CONFIDENCE);
             if (det && det->center_x < 0.45f)
             {
-                g_movement_pub->stop();
+                if (g_nav_pub) g_nav_pub->station_keep();
                 publish_status("Reposition_right", "SUCCESS");
                 return BT::NodeStatus::SUCCESS;
             }
@@ -1014,9 +1087,8 @@ public:
     BT::NodeStatus tick() override
     {
         cout << "[Follow_path] Moving along path using vision …" << endl;
+        if (g_nav_pub) g_nav_pub->idle();
 
-        // Surge forward, keeping path visible.  When path disappears,
-        // we've reached the end.
         auto t0 = SteadyClock::now();
         int frames_without_path = 0;
 
@@ -1026,7 +1098,6 @@ public:
             if (det)
             {
                 frames_without_path = 0;
-                // Keep path centred horizontally while surging
                 float ex = det->center_x - 0.5f;
                 if (std::abs(ex) > CENTER_TOL)
                 {
@@ -1038,19 +1109,19 @@ public:
             }
             else
             {
-                if (++frames_without_path >= 10) // ~1 s
+                if (++frames_without_path >= 10)
                 {
-                    g_movement_pub->stop();
+                    if (g_nav_pub) g_nav_pub->station_keep();
                     publish_status("Follow_path", "SUCCESS",
                                    "Path end reached");
                     return BT::NodeStatus::SUCCESS;
                 }
-                g_movement_pub->surge_forward(0.25f); // coast
+                g_movement_pub->surge_forward(0.25f);
             }
             std::this_thread::sleep_for(CTRL_PERIOD);
         }
 
-        g_movement_pub->stop();
+        if (g_nav_pub) g_nav_pub->station_keep();
         publish_status("Follow_path", "SUCCESS", "Timeout – assume done");
         return BT::NodeStatus::SUCCESS;
     }
@@ -1105,8 +1176,8 @@ public:
     {
         cout << "[Move_past_PVC] Surging through PVC posts with vision …"
              << endl;
+        if (g_nav_pub) g_nav_pub->idle();
 
-        // Surge forward until PVC posts enlarge then vanish from view
         auto t0 = SteadyClock::now();
         bool was_close = false;
         int  frames_gone = 0;
@@ -1121,13 +1192,11 @@ public:
             if (see_pvc)
             {
                 frames_gone = 0;
-                // Check if posts are big (close)
                 float max_w = 0.0f;
                 if (rd) max_w = std::max(max_w, rd->bbox_width);
                 if (wd) max_w = std::max(max_w, wd->bbox_width);
                 if (max_w > 0.25f) was_close = true;
 
-                // Centre between them if both visible
                 if (rd && wd)
                 {
                     Detection mid;
@@ -1140,7 +1209,7 @@ public:
             {
                 if (++frames_gone >= 6)
                 {
-                    g_movement_pub->stop();
+                    if (g_nav_pub) g_nav_pub->station_keep();
                     publish_status("Move_past_PVC", "SUCCESS");
                     return BT::NodeStatus::SUCCESS;
                 }
@@ -1150,7 +1219,7 @@ public:
             std::this_thread::sleep_for(CTRL_PERIOD);
         }
 
-        g_movement_pub->stop();
+        if (g_nav_pub) g_nav_pub->station_keep();
         publish_status("Move_past_PVC", "SUCCESS", "Timeout");
         return BT::NodeStatus::SUCCESS;
     }
@@ -1603,6 +1672,7 @@ int main(int argc, char **argv)
 
     // ── Spin ROS nodes in background ──
     g_movement_pub         = std::make_shared<MovementPublisher>();
+    g_nav_pub              = std::make_shared<NavigationPublisher>();
     g_behavior_status_node = std::make_shared<BehaviorStatusPublisher>();
 
     auto vision_sub       = std::make_shared<VisionSubscriber>(g_vision);
@@ -1613,6 +1683,7 @@ int main(int argc, char **argv)
     sub_executor.add_node(depth_sub);
     sub_executor.add_node(localization_sub);
     sub_executor.add_node(g_movement_pub);
+    sub_executor.add_node(g_nav_pub);
     sub_executor.add_node(g_behavior_status_node);
     std::thread ros_spin_thread([&]() { sub_executor.spin(); });
 
@@ -1639,6 +1710,7 @@ int main(int argc, char **argv)
     if (ros_spin_thread.joinable()) ros_spin_thread.join();
 
     g_movement_pub.reset();
+    g_nav_pub.reset();
     g_behavior_status_node.reset();
     g_vision.reset();
     g_depth.reset();
