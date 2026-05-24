@@ -1,41 +1,28 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  SHRUB v3 — Software for Handling and Regulating Underwater Behavior
+  SHRUB v4 — Software for Handling and Regulating Underwater Behavior
   RoboSub 2026 · BehaviorTree.CPP v4 · ROS 2 Humble
   Team: IntelligentLion
 
   ═══════════════════════════════════════════════════════════════════
-  HANDBOOK STATUS (2026-03-27)
+  2026 THEME: "Restore and Recovery"
   ═══════════════════════════════════════════════════════════════════
-  The GitBook is now branded "RoboSub 2026 | Team Handbook."
-  Section 4.2 was updated 2026-03-26 and says:
-    "Scoring Breakdown to be released at a later date."
-  However, the scoring section DOES reveal 2026-specific rules:
+  Two roles: Survey & Repair  vs  Search & Rescue
+  Role chosen at gate by passing under compass/hammer or ring_buoy/SOS side.
 
-  CONFIRMED 2026 CHANGES (from section 4.2):
-    • Pinger tasks are now named "Deploy" and "Restore"
-      - Only marked with pingers. No path markers to either.
-    • "Touch a buoy" is a new time-bonus prerequisite
-    • "Floating area" replaces "octagon" in breaching language
-    • Weight DQ threshold is 60 kg (section 3.1)
-    • Time bonus formula: (whole_min + fractional_sec/60) * 100
+  TASK SEQUENCE (follows path markers + pingers):
+    Gate → Slalom (path) → Bins (path) → Torpedoes (pinger) →
+    Octagon (pinger) → Return Home
 
-  TIME BONUS REQUIREMENTS (all three needed):
-    1. Touch a buoy
-    2. Drop ≥1 marker in bin OR fire ≥1 torpedo through opening
-    3. Fully surface within the floating structure
+  NAVIGATION AIDS:
+    Path 1: Gate → Slalom
+    Path 2: Slalom → Bins
+    Pinger 1: at Torpedoes (Deploy)
+    Pinger 2: at Octagon (Resupply)
 
-  STRATEGY: UNLOCK TIME BONUS ASAP
-  ═════════════════════════════════
-  Every minute of remaining clock = 100 pts. A sub that unlocks the
-  time bonus in 5 minutes has 10 min × 100 = 1000 pts just from time.
-  So the optimal order is:
-
-    Gate (mandatory) → Buoy (fast) → Bins (1 marker = fast) →
-    Surface in floating area → BONUS UNLOCKED →
-    then Deploy/Restore/Slalom/Return for additional task points
-
-  This tree is ordered exactly this way.
+  POOL: 7 ft (2.1m) deep. 1 ft drop from deck to water.
+  MISSION TIME: 15 min (900s). Surface breach outside octagon = run over.
+  WEIGHT: > 60 kg = DQ
 -->
 
 <root BTCPP_format="4">
@@ -51,14 +38,14 @@
                leak_detected="{leak_detected}"
                depth="{depth}"
                start_time="{start_time}"
-               inside_float_area="{inside_float_area}"/>
+               inside_octagon="{inside_octagon}"/>
       <SubTree ID="MissionExecution"
-               preferred_animal="{preferred_animal}"
-               preferred_side="{preferred_side}"
-               coin_flip="{coin_flip}"
+               role="{role}"
+               gate_side="{gate_side}"
+               coin_flip_heading="{coin_flip_heading}"
+               coin_flip_role="{coin_flip_role}"
                gate_heading="{gate_heading}"
-               inside_float_area="{inside_float_area}"
-               buoy_touched="{buoy_touched}"
+               inside_octagon="{inside_octagon}"
                marker_dropped="{marker_dropped}"
                torpedo_fired="{torpedo_fired}"
                objects_placed="{objects_placed}"/>
@@ -70,31 +57,27 @@
        SAFETY MONITOR
        ════════════════════════════════════════════════════════════════
        Pool: 7 ft (2.1m) deep. 1 ft drop from deck.
-       CRITICAL: breach outside floating area = run OVER for that vehicle.
+       CRITICAL: surface breach outside octagon = run OVER.
   -->
   <BehaviorTree ID="SafetyMonitor">
     <Sequence>
-      <!-- Battery -->
       <Fallback>
         <IsBatteryOk min_pct="20" battery_pct="{battery_pct}"/>
         <EmergencySurface reason="low_battery"/>
       </Fallback>
-      <!-- Leak -->
       <Fallback>
         <Inverter><IsLeakDetected leak="{leak_detected}"/></Inverter>
         <EmergencySurface reason="leak"/>
       </Fallback>
-      <!-- Max depth: stay off pool floor -->
       <Fallback>
         <IsDepthSafe max_depth="1.9" depth="{depth}"/>
         <AscendTo target_depth="1.2"/>
       </Fallback>
-      <!-- SURFACE BREACH PREVENTION: if ascending near surface
-           and NOT inside floating area, push back down. -->
+      <!-- SURFACE BREACH PREVENTION: only surface inside octagon -->
       <Fallback>
         <Fallback>
           <IsDepthSafe min_depth="0.15" depth="{depth}"/>
-          <IsInsideFloatArea val="{inside_float_area}"/>
+          <IsInsideOctagon val="{inside_octagon}"/>
         </Fallback>
         <AscendTo target_depth="0.5"/>
       </Fallback>
@@ -110,118 +93,110 @@
   <!-- ════════════════════════════════════════════════════════════════
        MISSION EXECUTION
        ════════════════════════════════════════════════════════════════
-       Phase 1: Gate (mandatory)
-       Phase 2: Time-bonus unlock sequence (Buoy → Bins → Surface)
-       Phase 3: Remaining tasks for additional points
-
-       SequenceWithMemory: remembers completed children, doesn't re-run them.
-       ForceSuccess: one task failure doesn't block the rest.
+       Phase 1: Gate (mandatory — choose role)
+       Phase 2: Slalom (path marker from gate)
+       Phase 3: Bins/Recon (path marker from slalom)
+       Phase 4: Deploy/Torpedoes (pinger-guided)
+       Phase 5: Resupply/Octagon (pinger-guided)
+       Phase 6: Return Home
 
        Time budget (900s total):
-         Gate ........ 90s   — submerge, detect, pass through
-         Buoy ........ 45s   — detect and touch
-         Bins ........ 75s   — 1 marker minimum, attempt 2
-         Surface ..... 90s   — navigate to floating area + surface
-         Deploy ...... 120s  — pinger nav + torpedo interaction
-         Restore ..... 120s  — pinger nav + object manipulation
-         Slalom ...... 90s   — 3 pipe sets
-         Return Home . 90s   — reverse heading + gate pass
-         Buffer ...... 180s  — TIME BONUS CLOCK (= ~300 pts)
+         Gate ........ 90s   — submerge, detect, choose role, pass through
+         Slalom ...... 90s   — 3 pipe sets, correct side + depth
+         Bins ........ 90s   — drop markers in correct role bins
+         Torpedoes ... 120s  — pinger nav, fire through openings
+         Octagon ..... 180s  — pinger nav, surface, items, baskets, face image
+         Return Home . 90s   — reverse heading, pass back through gate
+         Buffer ...... 240s  — safety margin
   -->
   <BehaviorTree ID="MissionExecution">
     <Sequence>
 
-      <!-- ══ PHASE 1: Gate (required) ══ -->
+      <!-- ══ PHASE 1: Gate (mandatory — role selection) ══ -->
       <Timeout msec="90000">
         <SubTree ID="HeadingOut_and_Gate"
-                 preferred_animal="{preferred_animal}"
-                 preferred_side="{preferred_side}"
-                 coin_flip="{coin_flip}"
+                 role="{role}"
+                 gate_side="{gate_side}"
+                 coin_flip_heading="{coin_flip_heading}"
+                 coin_flip_role="{coin_flip_role}"
                  gate_heading="{gate_heading}"/>
       </Timeout>
 
-      <!-- ══ PHASE 2: Time Bonus Unlock (fastest path to all 3 reqs) ══ -->
-      <SequenceWithMemory name="time_bonus_unlock">
+      <!-- ══ PHASE 2: Slalom (path marker from gate) ══ -->
+      <ForceSuccess>
+        <Timeout msec="90000">
+          <SubTree ID="AvoidDebris_Slalom"
+                   gate_side="{gate_side}"/>
+        </Timeout>
+      </ForceSuccess>
 
-        <!-- Req 1: Touch a buoy -->
-        <ForceSuccess>
-          <Timeout msec="45000">
-            <SubTree ID="TouchBuoy"
-                     buoy_touched="{buoy_touched}"/>
-          </Timeout>
-        </ForceSuccess>
+      <!-- ══ PHASE 3: Recon / Bins (path marker from slalom) ══ -->
+      <ForceSuccess>
+        <Timeout msec="90000">
+          <SubTree ID="Recon_Bins"
+                   role="{role}"
+                   marker_dropped="{marker_dropped}"/>
+        </Timeout>
+      </ForceSuccess>
 
-        <!-- Req 2: Drop 1+ marker in bin (simpler than torpedo) -->
-        <ForceSuccess>
-          <Timeout msec="75000">
-            <SubTree ID="DropBRUVS"
-                     preferred_animal="{preferred_animal}"
-                     marker_dropped="{marker_dropped}"/>
-          </Timeout>
-        </ForceSuccess>
+      <!-- ══ PHASE 4: Deploy / Torpedoes (pinger) ══ -->
+      <ForceSuccess>
+        <Timeout msec="120000">
+          <SubTree ID="Deploy_Torpedoes"
+                   role="{role}"
+                   torpedo_fired="{torpedo_fired}"/>
+        </Timeout>
+      </ForceSuccess>
 
-        <!-- Req 3: Surface in floating area -->
-        <ForceSuccess>
-          <Timeout msec="90000">
-            <SubTree ID="SurfaceInFloatArea"
-                     preferred_animal="{preferred_animal}"
-                     inside_float_area="{inside_float_area}"
-                     objects_placed="{objects_placed}"/>
-          </Timeout>
-        </ForceSuccess>
-      </SequenceWithMemory>
+      <!-- ══ PHASE 5: Resupply / Octagon (pinger) ══ -->
+      <ForceSuccess>
+        <Timeout msec="180000">
+          <SubTree ID="Resupply_Octagon"
+                   role="{role}"
+                   inside_octagon="{inside_octagon}"
+                   objects_placed="{objects_placed}"/>
+        </Timeout>
+      </ForceSuccess>
 
-      <!-- ══ PHASE 3: Additional points ══ -->
-      <SequenceWithMemory name="bonus_tasks">
+      <!-- ══ PHASE 6: Return Home ══ -->
+      <ForceSuccess>
+        <Timeout msec="90000">
+          <SubTree ID="ReturnHome"
+                   gate_heading="{gate_heading}"/>
+        </Timeout>
+      </ForceSuccess>
 
-        <!-- Deploy (pinger task) -->
-        <ForceSuccess>
-          <Timeout msec="120000">
-            <SubTree ID="Deploy"
-                     preferred_animal="{preferred_animal}"
-                     torpedo_fired="{torpedo_fired}"/>
-          </Timeout>
-        </ForceSuccess>
-
-        <!-- Slalom -->
-        <ForceSuccess>
-          <Timeout msec="90000">
-            <SubTree ID="NavigateTheChannel"
-                     preferred_side="{preferred_side}"/>
-          </Timeout>
-        </ForceSuccess>
-
-        <!-- Return Home -->
-        <ForceSuccess>
-          <Timeout msec="90000">
-            <SubTree ID="ReturnHome"
-                     gate_heading="{gate_heading}"/>
-          </Timeout>
-        </ForceSuccess>
-
-      </SequenceWithMemory>
     </Sequence>
   </BehaviorTree>
 
 
   <!-- ════════════════════════════════════════════════════════════════
-       HEADING OUT + GATE — "Collecting Data"
+       HEADING OUT + GATE — "Begin Assessment"
        ════════════════════════════════════════════════════════════════
-       Gate: 120 in × 47 in PVC. RED/BLACK boxes. Red divider.
-       Reef Shark on one side, Sawfish on the other.
-       Coin flip: Heads = parallel, Tails = backward (tail to gate).
+       Gate: 120 in x 60 in PVC, RED/BLACK panels.
+         Right side: RED upper, BLACK lower
+         Left side: BLACK upper, RED lower
+       RED divider splits gate in half.
+         One side: compass/hammer_pick (Survey & Repair)
+         Other side: ring_buoy/SOS (Search & Rescue)
+       AUV chooses role by passing under the corresponding side.
+
+       Coin flip (heading): Heads=parallel, Tails=backward
+       Coin flip (role): if visual indicator unavailable
+
        Style: 90° orientation changes. Roll/Pitch > Yaw.
-       "Pass cleanly — don't touch sides. Divider/images ok."
-       "Maintain control" = actively navigating, not drifting.
+       Must not touch gate sides. Divider/images ok.
+       Must maintain active control (not drifting).
   -->
   <BehaviorTree ID="HeadingOut_and_Gate">
     <Sequence>
 
+      <!-- Start on surface, submerge before leaving start zone -->
       <Submerge target_depth="1.2"/>
 
-      <!-- Coin flip handling: if tails, we're facing away → rotate 180 -->
+      <!-- Coin flip heading: if tails, facing away → rotate 180 -->
       <Fallback>
-        <Precondition if=" coin_flip != 'tails' " else="FAILURE">
+        <Precondition if=" coin_flip_heading != 'tails' " else="FAILURE">
           <AlwaysSuccess/>
         </Precondition>
         <Turn degrees="180"/>
@@ -240,30 +215,52 @@
 
       <Align_to detection="{gate_det}"/>
 
-      <!-- Identify animal → sets preferred_animal + preferred_side -->
+      <!-- Identify role icons on gate → determine which side to pass -->
       <Fallback>
         <Sequence>
-          <Detect_animal_on_gate animal="{preferred_animal}"
-                                 side="{preferred_side}"
-                                 conf="{det_conf}"/>
+          <Detect_role_icons survey_side="{survey_side}"
+                             rescue_side="{rescue_side}"
+                             conf="{det_conf}"/>
           <Precondition if=" det_conf > 0.55 " else="FAILURE">
             <AlwaysSuccess/>
           </Precondition>
+          <!-- Choose role: default to Survey & Repair -->
+          <Fallback>
+            <Sequence>
+              <Precondition if=" coin_flip_role == 'survey' " else="FAILURE">
+                <AlwaysSuccess/>
+              </Precondition>
+              <SetBlackboard output_key="role" value="survey_repair"/>
+              <SetBlackboard output_key="gate_side" value="{survey_side}"/>
+            </Sequence>
+            <Sequence>
+              <Precondition if=" coin_flip_role == 'rescue' " else="FAILURE">
+                <AlwaysSuccess/>
+              </Precondition>
+              <SetBlackboard output_key="role" value="search_rescue"/>
+              <SetBlackboard output_key="gate_side" value="{rescue_side}"/>
+            </Sequence>
+            <!-- Default: Survey & Repair -->
+            <Sequence>
+              <SetBlackboard output_key="role" value="survey_repair"/>
+              <SetBlackboard output_key="gate_side" value="{survey_side}"/>
+            </Sequence>
+          </Fallback>
         </Sequence>
+        <!-- Fallback: can't see icons, default Survey & Repair, right side -->
         <Sequence>
-          <SetBlackboard output_key="preferred_animal" value="reef_shark"/>
-          <SetBlackboard output_key="preferred_side" value="R"/>
+          <SetBlackboard output_key="role" value="survey_repair"/>
+          <SetBlackboard output_key="gate_side" value="R"/>
         </Sequence>
       </Fallback>
 
-      <!-- Position on correct side -->
-      <Reposition_to_gate_side side="{preferred_side}"/>
+      <!-- Position on chosen side of gate -->
+      <Reposition_to_gate_side side="{gate_side}"/>
 
-      <!-- Record heading BEFORE style (IMU drift containment) -->
+      <!-- Record heading BEFORE style attempt -->
       <Record_heading heading="{gate_heading}"/>
 
-      <!-- Style attempt (optional — ForceSuccess).
-           If style fails, plain pass-through still works. -->
+      <!-- Style attempt: barrel roll for Roll/Pitch points (worth more than Yaw) -->
       <Fallback>
         <Sequence>
           <ForceSuccess>
@@ -281,58 +278,102 @@
 
 
   <!-- ════════════════════════════════════════════════════════════════
-       TOUCH BUOY (NEW for 2026)
+       AVOID DEBRIS — Slalom
        ════════════════════════════════════════════════════════════════
-       From 4.2: "touch a buoy" is one of 3 time-bonus requirements.
-       Full task description pending. Minimal subtree: find + approach + touch.
+       3 sets of RED and WHITE PVC pipes (1 in, 3 ft tall).
+       Arrangement: WHITE left, RED middle, WHITE right.
+       More points for:
+         - Same side of red pipe as gate passage
+         - Staying within pipe depth (not above/below)
+       Path marker (ORANGE) at gate points to slalom.
   -->
-  <BehaviorTree ID="TouchBuoy">
+  <BehaviorTree ID="AvoidDebris_Slalom">
     <Sequence>
-      <RetryUntilSuccessful num_attempts="3">
-        <Fallback>
-          <Detect_buoy result="{buoy_det}"/>
-          <Sequence><Turn degrees="60"/><Wait msec="300"/></Sequence>
-        </Fallback>
-      </RetryUntilSuccessful>
-      <Align_to detection="{buoy_det}"/>
-      <Approach_and_touch target="{buoy_det}"/>
-      <SetBlackboard output_key="buoy_touched" value="true"/>
+
+      <!-- Follow orange path marker from gate to slalom -->
+      <Fallback>
+        <Sequence>
+          <Detect_path_marker color="orange" result="{path_det}"/>
+          <Follow_path detection="{path_det}"/>
+        </Sequence>
+        <Navigate_to waypoint="slalom_start"/>
+      </Fallback>
+
+      <!-- Adjust depth to be within pipe range (pipes are 3ft/0.9m tall) -->
+      <Submerge target_depth="1.4"/>
+
+      <!-- Navigate 3 sets of pipes -->
+      <Repeat num_cycles="3">
+        <ForceSuccess>
+          <Sequence>
+            <RetryUntilSuccessful num_attempts="3">
+              <Detect_slalom_pipes result="{pipe_det}"/>
+            </RetryUntilSuccessful>
+            <!-- gate_side determines which side of red pipe to pass -->
+            <Compute_slalom_path side="{gate_side}"
+                                  pipes="{pipe_det}"
+                                  waypoint="{slalom_wp}"/>
+            <Navigate_to waypoint="{slalom_wp}"/>
+            <!-- Stay within pipe depth for bonus -->
+            <Hold_depth target="1.4" tol="0.2"/>
+          </Sequence>
+        </ForceSuccess>
+      </Repeat>
+
     </Sequence>
   </BehaviorTree>
 
 
   <!-- ════════════════════════════════════════════════════════════════
-       DROP A BRUVS — Bins
+       RECON — Bins
        ════════════════════════════════════════════════════════════════
-       Bin: 24 in × 12 in. Reef Shark / Sawfish halves.
-       More points for correct half (matches gate animal).
-       Time bonus only needs 1 marker — attempt 2 for bonus pts.
+       3D pipeline with 4 bins (2 per role).
+       Inside bins: fire (Survey & Repair) or blood (Search & Rescue).
+       Near each bin: light + magnetic detector.
+       Light starts ON → turn off for points.
+       Drop up to 2 markers. More points for correct role bins.
+       Path marker (ORANGE) from slalom points here.
   -->
-  <BehaviorTree ID="DropBRUVS">
+  <BehaviorTree ID="Recon_Bins">
     <Sequence>
 
-      <Navigate_to waypoint="bin_area"/>
+      <!-- Follow orange path marker from slalom to bins -->
+      <Fallback>
+        <Sequence>
+          <Detect_path_marker color="orange" result="{path_det}"/>
+          <Follow_path detection="{path_det}"/>
+        </Sequence>
+        <Navigate_to waypoint="bins_area"/>
+      </Fallback>
 
+      <!-- Detect bins and identify which are for our role -->
       <RetryUntilSuccessful num_attempts="3">
-        <Detect_bin_below result="{bin_det}" correct_half="{corr_half}"/>
+        <Detect_bins result="{bin_det}" role="{role}"
+                     correct_bins="{correct_bins}"/>
       </RetryUntilSuccessful>
 
-      <!-- Marker 1 (critical — unlocks time bonus req 2) -->
+      <!-- Marker 1: drop in correct role bin -->
       <Sequence>
-        <Align_above target="{bin_det}" half="{corr_half}"
-                     animal="{preferred_animal}"/>
+        <Align_above target="{correct_bins}" bin_index="0"/>
         <Stabilize msec="800"/>
         <Drop_marker id="1"/>
         <SetBlackboard output_key="marker_dropped" value="true"/>
       </Sequence>
 
-      <!-- Marker 2 (bonus — ForceSuccess so failure doesn't block) -->
+      <!-- Marker 2: drop in second correct role bin -->
       <ForceSuccess>
         <Sequence>
-          <Align_above target="{bin_det}" half="{corr_half}"
-                       animal="{preferred_animal}"/>
+          <Align_above target="{correct_bins}" bin_index="1"/>
           <Stabilize msec="800"/>
           <Drop_marker id="2"/>
+        </Sequence>
+      </ForceSuccess>
+
+      <!-- Bonus: interact with magnetic detector to turn off light -->
+      <ForceSuccess>
+        <Sequence>
+          <Detect_magnetic_detector result="{mag_det}"/>
+          <Approach_and_interact target="{mag_det}"/>
         </Sequence>
       </ForceSuccess>
 
@@ -341,23 +382,88 @@
 
 
   <!-- ════════════════════════════════════════════════════════════════
-       SURFACE IN FLOATING AREA (Restore baseline)
+       DEPLOY — Torpedoes
        ════════════════════════════════════════════════════════════════
-       From 4.2: "fully surface within the floating structure" for
-       time bonus and task points. Vehicle CAN re-submerge after.
-       Breach OUTSIDE = run over.
-
-       Pinger located near center guides AUV here.
-       9 ft (2.7m) diameter octagon floats on surface.
-       Images of Reef Shark + Sawfish hanging inward.
-       Trash table with Bottle (yellow) + Ladle (pink).
-       Baskets on opposite edges. Opposite color rule.
-
-       "Surfacing with object" = object attached when on surface.
-       "Grabbing" = captured + constrained. Partial for hook/magnet.
-       "Releasing" = falls free. Partial for hanging.
+       Pinger-guided (no path marker).
+       Board: 2 ft x 2 ft. Two openings (large + small).
+       Survey & Repair: fire (large) / fire_engine (small)
+       Search & Rescue: blood (large) / ambulance (small)
+       Sequence bonus: large opening first, then small.
+       Distance bonus: far (1 ft), farther (1.5 ft).
+       Partial points for torpedo touching board.
   -->
-  <BehaviorTree ID="SurfaceInFloatArea">
+  <BehaviorTree ID="Deploy_Torpedoes">
+    <Sequence>
+
+      <!-- Navigate using pinger -->
+      <Fallback>
+        <Sequence>
+          <Detect_pinger freq_min="25000" freq_max="40000"
+                         bearing="{ping_bearing}"/>
+          <Navigate_to_bearing bearing="{ping_bearing}" stop_dist="2.0"/>
+        </Sequence>
+        <Navigate_to waypoint="torpedoes_est"/>
+      </Fallback>
+
+      <!-- Detect torpedo board -->
+      <RetryUntilSuccessful num_attempts="3">
+        <Detect_torpedo_board role="{role}" result="{board_det}"
+                              large_opening="{large_open}"
+                              small_opening="{small_open}"/>
+      </RetryUntilSuccessful>
+      <Align_to detection="{board_det}"/>
+
+      <!-- Back off for distance bonus (farther = 1.5 ft / 0.45m) -->
+      <ForceSuccess>
+        <Set_firing_distance dist="0.45"/>
+      </ForceSuccess>
+
+      <!-- Torpedo 1: large opening first (sequence bonus) -->
+      <ForceSuccess>
+        <Sequence>
+          <Align_to_opening opening="{large_open}"/>
+          <Fire_torpedo tube="1"/>
+          <SetBlackboard output_key="torpedo_fired" value="true"/>
+        </Sequence>
+      </ForceSuccess>
+
+      <!-- Torpedo 2: small opening (completes sequence) -->
+      <ForceSuccess>
+        <Sequence>
+          <Align_to_opening opening="{small_open}"/>
+          <Fire_torpedo tube="2"/>
+        </Sequence>
+      </ForceSuccess>
+
+    </Sequence>
+  </BehaviorTree>
+
+
+  <!-- ════════════════════════════════════════════════════════════════
+       RESUPPLY — Octagon
+       ════════════════════════════════════════════════════════════════
+       9 ft (2.7m) diameter octagon on surface. Pinger at center.
+       Hanging inward: compass, hammer_pick, ring_buoy, SOS images.
+       Table at center with role-specific items:
+         Survey & Repair: nut_and_bolt + electric_plug
+         Search & Rescue: pill + adhesive_bandage
+       Baskets on opposite edges:
+         Survey basket: warning sign at bottom
+         Rescue basket: helmet_with_cross at bottom
+
+       Scoring:
+         - Surface inside octagon
+         - Surface with item
+         - Face correct image (depends on items in basket):
+           * 1 item → compass (Survey) / ring_buoy (Rescue)
+           * 2+ items → hammer_pick (Survey) / SOS (Rescue)
+         - Place items in correct basket
+         - Rotation bonus: N turns = N items in basket
+
+       CRITICAL: surfacing outside octagon = run over!
+       Can re-submerge after surfacing to continue.
+  -->
+  <BehaviorTree ID="Resupply_Octagon">
     <Sequence>
 
       <!-- Navigate using pinger → vision → dead reckoning -->
@@ -368,59 +474,88 @@
           <Navigate_to_bearing bearing="{ping_bearing}" stop_dist="1.5"/>
         </Sequence>
         <Sequence>
-          <Detect_float_area_below result="{float_det}"/>
-          <Center_beneath target="{float_det}"/>
+          <Detect_octagon_below result="{oct_det}"/>
+          <Center_beneath target="{oct_det}"/>
         </Sequence>
-        <Navigate_to waypoint="float_area_est"/>
+        <Navigate_to waypoint="octagon_est"/>
       </Fallback>
 
-      <!-- Confirm we're under the floating structure -->
+      <!-- Confirm we're under the octagon -->
       <RetryUntilSuccessful num_attempts="3">
         <Sequence>
-          <Detect_float_area_below result="{float_det}"/>
-          <Center_beneath target="{float_det}"/>
-          <Confirm_overhead is_inside="{inside_float_area}"/>
+          <Detect_octagon_below result="{oct_det}"/>
+          <Center_beneath target="{oct_det}"/>
+          <Confirm_overhead is_inside="{inside_octagon}"/>
         </Sequence>
       </RetryUntilSuccessful>
 
-      <!-- SURFACE (unlocks time bonus req 3) -->
-      <Surface_in_float_area/>
+      <!-- SURFACE inside octagon (critical — do not surface elsewhere!) -->
+      <Surface_in_octagon/>
 
-      <!-- Face correct animal (2s pause for judges) -->
+      <!-- Face correct image for 0 items (initial surface) -->
       <ForceSuccess>
         <Sequence>
+          <Determine_face_image role="{role}" items_count="0"
+                                target_image="{face_target}"/>
           <RetryUntilSuccessful num_attempts="4">
             <Fallback>
-              <Detect_animal_image target="{preferred_animal}"
-                                    dir="{animal_dir}"/>
+              <Detect_hanging_image target="{face_target}"
+                                     dir="{image_dir}"/>
               <Sequence><Turn degrees="90"/><Wait msec="300"/></Sequence>
             </Fallback>
           </RetryUntilSuccessful>
-          <Face_direction dir="{animal_dir}"/>
+          <Face_direction dir="{image_dir}"/>
           <Wait msec="2500"/>
         </Sequence>
       </ForceSuccess>
 
-      <!-- Trash cleanup: grab → surface with object → place in basket -->
+      <!-- Item pickup loop: grab items, place in correct basket -->
       <ForceSuccess>
         <Repeat num_cycles="2">
           <ForceSuccess>
             <Sequence>
+              <!-- Re-submerge to grab item from table -->
               <Submerge target_depth="1.0"/>
+
               <RetryUntilSuccessful num_attempts="2">
                 <Sequence>
-                  <Detect_object result="{obj_det}" type="{obj_type}"/>
-                  <Align_to detection="{obj_det}"/>
+                  <Detect_table_item role="{role}"
+                                     result="{item_det}"
+                                     item_type="{item_type}"/>
+                  <Align_to detection="{item_det}"/>
                   <Grab_object/>
                 </Sequence>
               </RetryUntilSuccessful>
-              <Confirm_overhead is_inside="{inside_float_area}"/>
-              <Surface_in_float_area/>
-              <Determine_basket obj_type="{obj_type}"
+
+              <!-- Confirm still inside octagon before surfacing -->
+              <Confirm_overhead is_inside="{inside_octagon}"/>
+              <Surface_in_octagon/>
+
+              <!-- Place item in correct basket based on role -->
+              <Determine_basket role="{role}" item_type="{item_type}"
                                 basket="{target_basket}"/>
               <Align_to_basket basket="{target_basket}"/>
               <Release_object/>
-              <Increment key="objects_placed" val="{objects_placed}"/>
+              <Increment key="objects_placed" current_val="{objects_placed}" new_val="{objects_placed}"/>
+
+              <!-- Face correct image based on items placed so far -->
+              <ForceSuccess>
+                <Sequence>
+                  <Determine_face_image role="{role}"
+                                        items_count="{objects_placed}"
+                                        target_image="{face_target}"/>
+                  <RetryUntilSuccessful num_attempts="4">
+                    <Fallback>
+                      <Detect_hanging_image target="{face_target}"
+                                             dir="{image_dir}"/>
+                      <Sequence><Turn degrees="90"/><Wait msec="300"/></Sequence>
+                    </Fallback>
+                  </RetryUntilSuccessful>
+                  <Face_direction dir="{image_dir}"/>
+                  <Wait msec="2000"/>
+                </Sequence>
+              </ForceSuccess>
+
             </Sequence>
           </ForceSuccess>
         </Repeat>
@@ -434,97 +569,8 @@
       </ForceSuccess>
 
       <!-- Re-submerge to continue mission -->
-      <SetBlackboard output_key="inside_float_area" value="false"/>
+      <SetBlackboard output_key="inside_octagon" value="false"/>
       <Submerge target_depth="1.2"/>
-
-    </Sequence>
-  </BehaviorTree>
-
-
-  <!-- ════════════════════════════════════════════════════════════════
-       DEPLOY (pinger task — likely Tagging/Torpedoes equivalent)
-       ════════════════════════════════════════════════════════════════
-       From 4.2: "Deploy" is pinger-only, no path markers.
-       Board: 2 ft × 2 ft. Two openings. Reef Shark / Sawfish.
-       Sequence bonus: chosen animal first, then other.
-       Far bonus: fire from beyond distance bars.
-       Partial pts for torpedo touching board without passing through.
-  -->
-  <BehaviorTree ID="Deploy">
-    <Sequence>
-
-      <Fallback>
-        <Sequence>
-          <Detect_pinger freq_min="25000" freq_max="40000"
-                         bearing="{ping_bearing}"/>
-          <Navigate_to_bearing bearing="{ping_bearing}" stop_dist="2.0"/>
-        </Sequence>
-        <Navigate_to waypoint="deploy_est"/>
-      </Fallback>
-
-      <RetryUntilSuccessful num_attempts="3">
-        <Detect_task_board task="deploy" result="{board_det}"/>
-      </RetryUntilSuccessful>
-      <Align_to detection="{board_det}"/>
-
-      <!-- Torpedo 1: chosen animal opening first (sequence bonus) -->
-      <ForceSuccess>
-        <Sequence>
-          <Detect_opening animal="{preferred_animal}" result="{open1}"/>
-          <Align_to_opening opening="{open1}"/>
-          <Fire_torpedo tube="1"/>
-          <SetBlackboard output_key="torpedo_fired" value="true"/>
-        </Sequence>
-      </ForceSuccess>
-
-      <!-- Torpedo 2: other opening (completes sequence) -->
-      <ForceSuccess>
-        <Sequence>
-          <Detect_opening animal="other" result="{open2}"/>
-          <Align_to_opening opening="{open2}"/>
-          <Fire_torpedo tube="2"/>
-        </Sequence>
-      </ForceSuccess>
-
-    </Sequence>
-  </BehaviorTree>
-
-
-  <!-- ════════════════════════════════════════════════════════════════
-       NAVIGATE THE CHANNEL — Slalom
-       ════════════════════════════════════════════════════════════════
-       3 sets of red/white PVC pipes (1 in, 3 ft tall, floor-moored).
-       White left, red middle, white right.
-       More points for: same side as gate choice + within pipe depth.
-       Orange path marker at gate points to slalom start.
-  -->
-  <BehaviorTree ID="NavigateTheChannel">
-    <Sequence>
-
-      <Fallback>
-        <Sequence>
-          <Detect_path_marker color="orange" result="{path_det}"/>
-          <Follow_path detection="{path_det}"/>
-        </Sequence>
-        <Navigate_to waypoint="slalom_start"/>
-      </Fallback>
-
-      <Submerge target_depth="1.4"/>
-
-      <Repeat num_cycles="3">
-        <ForceSuccess>
-          <Sequence>
-            <RetryUntilSuccessful num_attempts="3">
-              <Detect_slalom_pipes result="{pipe_det}"/>
-            </RetryUntilSuccessful>
-            <Compute_slalom_path side="{preferred_side}"
-                                  pipes="{pipe_det}"
-                                  waypoint="{slalom_wp}"/>
-            <Navigate_to waypoint="{slalom_wp}"/>
-            <Hold_depth target="1.4" tol="0.2"/>
-          </Sequence>
-        </ForceSuccess>
-      </Repeat>
 
     </Sequence>
   </BehaviorTree>
@@ -533,8 +579,7 @@
   <!-- ════════════════════════════════════════════════════════════════
        RETURN HOME
        ════════════════════════════════════════════════════════════════
-       "At the end of the run, while underwater, the AUV passes back
-        through the start gate." Must stay submerged.
+       While UNDERWATER, pass back through the start gate.
   -->
   <BehaviorTree ID="ReturnHome">
     <Sequence>
@@ -562,14 +607,14 @@
 
   <!-- ════════════════════════════════════════════════════════════════
        QUALIFICATION RUN
-       From 3.4.3: pass through gate autonomously, everything submerged.
+       Pass through gate autonomously, everything submerged.
   -->
   <BehaviorTree ID="QualificationRun">
     <ReactiveSequence>
       <SubTree ID="SafetyMonitor"
                battery_pct="{battery_pct}" leak_detected="{leak_detected}"
                depth="{depth}" start_time="{start_time}"
-               inside_float_area="{inside_float_area}"/>
+               inside_octagon="{inside_octagon}"/>
       <Sequence>
         <Submerge target_depth="1.0"/>
         <RetryUntilSuccessful num_attempts="4">
@@ -586,41 +631,11 @@
 
 
   <!-- ════════════════════════════════════════════════════════════════
-       PRE-QUALIFICATION RUN
-       From 3.4.1: submerge → through gate → circle marker 33 ft
-       beyond → back through gate. No surface breach.
-  -->
-  <BehaviorTree ID="PreQualRun">
-    <ReactiveSequence>
-      <SubTree ID="SafetyMonitor"
-               battery_pct="{battery_pct}" leak_detected="{leak_detected}"
-               depth="{depth}" start_time="{start_time}"
-               inside_float_area="{inside_float_area}"/>
-      <Sequence>
-        <Submerge target_depth="1.0"/>
-        <Detect_gate result="{gate_det}"/>
-        <Align_to detection="{gate_det}"/>
-        <Record_heading heading="{gate_heading}"/>
-        <Move_through_gate/>
-        <Navigate_forward dist="10.0"/>
-        <Detect_vertical_marker result="{marker_det}"/>
-        <Circle_around target="{marker_det}"/>
-        <Compute_reverse_heading gate_heading="{gate_heading}"
-                                  result="{return_heading}"/>
-        <Navigate_on_heading heading="{return_heading}" dist="10.0"/>
-        <Detect_gate result="{gate_det}"/>
-        <Align_to detection="{gate_det}"/>
-        <Move_through_gate/>
-      </Sequence>
-    </ReactiveSequence>
-  </BehaviorTree>
-
-
-  <!-- ════════════════════════════════════════════════════════════════
        NODE MODEL (Groot2 compatibility)
   -->
   <TreeNodesModel>
 
+    <!-- ── Conditions ── -->
     <Condition ID="IsBatteryOk">
       <input_port name="min_pct" default="20"/><input_port name="battery_pct"/>
     </Condition>
@@ -630,12 +645,13 @@
       <input_port name="min_depth" default="0.0"/>
       <input_port name="depth"/>
     </Condition>
-    <Condition ID="IsInsideFloatArea"><input_port name="val"/></Condition>
+    <Condition ID="IsInsideOctagon"><input_port name="val"/></Condition>
     <Condition ID="IsTimeRemaining">
       <input_port name="min_sec" default="30"/><input_port name="start_time"/>
     </Condition>
     <Condition ID="AlwaysSuccess"/>
 
+    <!-- ── Movement Actions ── -->
     <Action ID="EmergencySurface"><input_port name="reason"/></Action>
     <Action ID="Submerge"><input_port name="target_depth" default="1.2"/></Action>
     <Action ID="AscendTo"><input_port name="target_depth"/></Action>
@@ -649,7 +665,6 @@
     <Action ID="Navigate_on_heading">
       <input_port name="heading"/><input_port name="dist"/>
     </Action>
-    <Action ID="Navigate_forward"><input_port name="dist"/></Action>
     <Action ID="Move_through_gate"/>
     <Action ID="Reposition_to_gate_side"><input_port name="side"/></Action>
     <Action ID="Record_heading"><output_port name="heading"/></Action>
@@ -657,68 +672,77 @@
     <Action ID="Hold_depth">
       <input_port name="target"/><input_port name="tol" default="0.2"/>
     </Action>
-    <Action ID="Surface_in_float_area"/>
+    <Action ID="Surface_in_octagon"/>
     <Action ID="Face_direction"><input_port name="dir"/></Action>
     <Action ID="Follow_path"><input_port name="detection"/></Action>
-    <Action ID="Circle_around"><input_port name="target"/></Action>
     <Action ID="Compute_reverse_heading">
       <input_port name="gate_heading"/><output_port name="result"/>
     </Action>
+    <Action ID="Set_firing_distance"><input_port name="dist"/></Action>
 
+    <!-- ── Detection Actions ── -->
     <Action ID="Detect_gate"><output_port name="result"/></Action>
-    <Action ID="Detect_animal_on_gate">
-      <output_port name="animal"/><output_port name="side"/>
+    <Action ID="Detect_role_icons">
+      <output_port name="survey_side"/>
+      <output_port name="rescue_side"/>
       <output_port name="conf"/>
-    </Action>
-    <Action ID="Detect_animal_image">
-      <input_port name="target"/><output_port name="dir"/>
     </Action>
     <Action ID="Detect_pinger">
       <input_port name="freq_min"/><input_port name="freq_max"/>
       <output_port name="bearing"/>
     </Action>
-    <Action ID="Detect_float_area_below"><output_port name="result"/></Action>
+    <Action ID="Detect_octagon_below"><output_port name="result"/></Action>
     <Action ID="Confirm_overhead"><output_port name="is_inside"/></Action>
-    <Action ID="Detect_buoy"><output_port name="result"/></Action>
-    <Action ID="Detect_bin_below">
-      <output_port name="result"/><output_port name="correct_half"/>
-    </Action>
-    <Action ID="Detect_object">
-      <output_port name="result"/><output_port name="type"/>
+    <Action ID="Detect_bins">
+      <output_port name="result"/><input_port name="role"/>
+      <output_port name="correct_bins"/>
     </Action>
     <Action ID="Detect_slalom_pipes"><output_port name="result"/></Action>
-    <Action ID="Detect_task_board">
-      <input_port name="task"/><output_port name="result"/>
-    </Action>
-    <Action ID="Detect_opening">
-      <input_port name="animal"/><output_port name="result"/>
+    <Action ID="Detect_torpedo_board">
+      <input_port name="role"/><output_port name="result"/>
+      <output_port name="large_opening"/>
+      <output_port name="small_opening"/>
     </Action>
     <Action ID="Detect_path_marker">
       <input_port name="color"/><output_port name="result"/>
     </Action>
-    <Action ID="Detect_vertical_marker"><output_port name="result"/></Action>
+    <Action ID="Detect_hanging_image">
+      <input_port name="target"/><output_port name="dir"/>
+    </Action>
+    <Action ID="Detect_table_item">
+      <input_port name="role"/><output_port name="result"/>
+      <output_port name="item_type"/>
+    </Action>
+    <Action ID="Detect_magnetic_detector"><output_port name="result"/></Action>
 
+    <!-- ── Alignment / Positioning ── -->
     <Action ID="Align_to"><input_port name="detection"/></Action>
     <Action ID="Align_above">
-      <input_port name="target"/><input_port name="half"/>
-      <input_port name="animal"/>
+      <input_port name="target"/><input_port name="bin_index"/>
     </Action>
     <Action ID="Align_to_opening"><input_port name="opening"/></Action>
     <Action ID="Align_to_basket"><input_port name="basket"/></Action>
     <Action ID="Center_beneath"><input_port name="target"/></Action>
-    <Action ID="Approach_and_touch"><input_port name="target"/></Action>
+    <Action ID="Approach_and_interact"><input_port name="target"/></Action>
 
+    <!-- ── Manipulation Actions ── -->
     <Action ID="Grab_object"/>
     <Action ID="Release_object"/>
     <Action ID="Drop_marker"><input_port name="id"/></Action>
     <Action ID="Fire_torpedo"><input_port name="tube"/></Action>
 
+    <!-- ── Style / Bonus Actions ── -->
     <Action ID="Style_through_gate">
       <input_port name="type" default="barrel_roll"/>
       <input_port name="det"/>
     </Action>
     <Action ID="Determine_basket">
-      <input_port name="obj_type"/><output_port name="basket"/>
+      <input_port name="role"/><input_port name="item_type"/>
+      <output_port name="basket"/>
+    </Action>
+    <Action ID="Determine_face_image">
+      <input_port name="role"/><input_port name="items_count"/>
+      <output_port name="target_image"/>
     </Action>
     <Action ID="Compute_slalom_path">
       <input_port name="side"/><input_port name="pipes"/>
@@ -726,7 +750,7 @@
     </Action>
     <Action ID="Rotation_bonus"><input_port name="count"/></Action>
     <Action ID="Increment">
-      <input_port name="key"/><inout_port name="val"/>
+      <input_port name="key"/><input_port name="current_val"/><output_port name="new_val"/>
     </Action>
     <Action ID="SetBlackboard">
       <input_port name="output_key"/><input_port name="value"/>

@@ -1,0 +1,37 @@
+ROBOSUB 2026 - SECTION 3.3: VEHICLE OPERATIONS
+================================================
+
+3.3.1 LAUNCH/RECOVERY
+- Teams responsible for safe launch/retrieval
+- Lower/raise from pool side at designated section (A, B, C, D)
+- Pool: 7 ft (2.1m) deep, 1 ft (0.3m) drop from deck to water surface
+- 10 ft (3m) long pipe with four-point harness provided at each section
+- Two team members lift vehicle, position over water, lower in
+- Reach down from edge to unhook four connection points
+- Reverse procedure to retrieve
+
+Sections A and D: recommend bridging the corner
+Sections B and C: recommend someone in water to keep vehicle off wall
+
+3.3.2 HARNESSING THE AUV
+- ALL teams required to use harness/sling for launch/retrieval
+- Vehicle may need to be suspended for weighing
+- Integrate sling attachment points during design
+- Hard points on vehicle needed (strong, secure attachment)
+- Options: chain, rope, sewn slings (runners)
+- Use carabiners for attachment (e.g., Black Diamond Oval)
+- KISS principle: easy setup, quick attach/detach
+
+Recommended knots:
+- Figure 8 Rewoven: ~80% strength, easy to tie/inspect
+- Bowline: ~70% strength, easy to untie after loading
+- Double/Triple Fisherman's: best for joining ropes
+
+3.3.3 TEAM SWIMMERS
+- Teams may volunteer swimmer(s) for in-water safety/ops
+- Swimmer must tread water for 1 minute each water entry
+- Pool is 7 feet deep everywhere
+- Can use another team's swimmer
+- Semi-Finals, Third-Chance, Finals: NO team swimmers allowed
+- Only during Practice/Qualifying runs
+- Bring own swimming equipment (masks, snorkels, fins)

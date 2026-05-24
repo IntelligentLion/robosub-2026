@@ -1,0 +1,189 @@
+ROBOSUB 2026 - SECTION 3.2: TASK DESCRIPTIONS
+===============================================
+
+THEME: "Restore and Recovery"
+A storm swept through, leaving damaged infrastructure, disrupted communication,
+and environmental hazards. Two roles:
+- SURVEY & REPAIR: Damage assessment, inspect area, repair infrastructure
+- SEARCH & RESCUE: Search debris, restore safety and functionality
+
+No three elements (launch point, gate, tasks) are along a line.
+
+------------------------------------------------------------------------
+3.2.1 HEADING OUT (COIN FLIP)
+------------------------------------------------------------------------
+- Teams may orient AUV in any direction from designated starting location
+- All vehicles must BEGIN ON SURFACE, SUBMERGE BEFORE LEAVING START ZONE
+- Optional coin flip for extra points:
+  * HEADS: AUV positioned approximately parallel to gate
+  * TAILS: AUV positioned with tail approximately facing gate (backward)
+
+------------------------------------------------------------------------
+3.2.2 TASK 1 - BEGIN ASSESSMENT (GATE)
+------------------------------------------------------------------------
+Gate construction:
+- PVC pipe floating just below surface, moored to bottom
+- 3-inch wide panels: BLACK and RED corrugated plastic
+- RIGHT side: RED upper half, BLACK lower half (Red, Right, Above)
+- LEFT side: BLACK upper half, RED lower half
+- Gate dimensions: 120 in x 60 in (3m x 1.5m)
+
+Gate divider:
+- 2-inch RED corrugated flat sheet divides gate in half
+- One side has compass/hammer_pick image (SURVEY & REPAIR)
+- Other side has ring_buoy/SOS image (SEARCH & RESCUE)
+- AUV chooses role by passing under a specific side
+
+Role icons:
+- Survey & Repair: compass / hammer_pick
+- Search & Rescue: ring_buoy / SOS
+
+Style points:
+- Every 90-degree change in orientation = accumulated points
+- Returning to previous orientation doesn't count
+- Roll and Pitch worth MORE than Yaw
+
+Capability Matrix:
+- Core: Pass through the gate
+- Advanced: Coin flip determines orientation
+- Disruptive: Random role assignment (coin flip or visual indicator)
+
+Scoring:
+- Pass through gate
+- Maintain control
+- Coin flip (heading)
+- Coin flip (role)
+- Style: Yaw, Roll/Pitch
+
+If visual indicator not available, coin flip assigns role.
+
+------------------------------------------------------------------------
+3.2.3 TASK 2 - AVOID DEBRIS (SLALOM)
+------------------------------------------------------------------------
+- Sets of vertical RED and WHITE PVC pipes (1 inch, 3 ft / 0.9m tall)
+- Moored at different heights to floor, floating vertically
+- Arrangement: WHITE left, RED middle, WHITE right
+- THREE sets of pipes, points for each navigated
+
+More points for:
+- Staying on SAME SIDE of red pipe as gate passage
+  (if red gate divider was on right, pass with red pipe on right)
+- Staying WITHIN the area of the pipes (not above, not below)
+  As long as part of AUV breaks plane of pipes = inside
+
+Capability Matrix:
+- Core: Identify and stay within slalom
+- Advanced: Navigate correct side
+- Disruptive: None
+
+Scoring:
+- Navigate debris: any, correct side
+- Correct depth
+
+------------------------------------------------------------------------
+3.2.4 TASK 3 - RECON (BINS)
+------------------------------------------------------------------------
+- 3D pipeline made from PVC, supported off pool bottom
+- Four bins on sides of pipeline (2 per role)
+- Inside bins: fire emoji (Survey & Repair), blood emoji (Search & Rescue)
+- Near each bin: a light and magnetic detector
+
+At run start, light is ON signaling need for repair/rescue.
+
+Points for:
+- Dropping up to 2 markers into bins (based on where marker rests)
+- More points for markers in bins matching AUV's role
+- Additional points for interacting with magnetic detector on pipeline
+- Additional points for turning light off
+
+Note: Light specifications still being determined.
+
+Capability Matrix:
+- Core: Drop markers in bin
+- Advanced: Drop markers in correct bin
+- Disruptive: (tentative) Interact with light
+
+Scoring:
+- Drop marker(s) in: any, correct bin
+- (tentative) Interact with light
+
+Bin dimensions: 24 in x 12 in x 6 in (610mm x 305mm x 152mm)
+
+------------------------------------------------------------------------
+3.2.5 TASK 4 - DEPLOY (TORPEDOES)
+------------------------------------------------------------------------
+- One vertical board with images on front side
+- Survey & Repair: fire / fire_engine
+- Search & Rescue: blood / ambulance
+- Two different board versions, two different size openings
+
+Points for:
+- Firing torpedoes through ANY opening (must pass through for full points)
+- Partial points: torpedo touches board without passing through
+- Maximum points: fire through LARGER opening first, then SMALLER opening
+  * Survey: fire (large) then fire_engine (small)
+  * Rescue: blood (large) then ambulance (small)
+- Distance bonus: far (1 ft) and farther (1.5 ft)
+
+Capability Matrix:
+- Core: Fire torpedo through any opening
+- Advanced: Fire torpedoes in correct sequence (large, small)
+- Disruptive: Fire torpedoes in correct sequence (large, small)
+
+Board dimensions: 2 ft x 2 ft (0.6m x 0.6m)
+
+------------------------------------------------------------------------
+3.2.6 TASK 5 - RESUPPLY (OCTAGON)
+------------------------------------------------------------------------
+- 9 ft (2.7m) diameter octagon floating on surface
+- Acoustic pinger on floor near center guides AUV
+- Hanging from octagon (facing inward): compass, hammer_pick, ring_buoy, SOS images
+- Center: Resupply table (2ft x 2ft)
+- On table, two items per role:
+  * Survey & Repair: nut_and_bolt + electric_plug
+  * Search & Rescue: pill + adhesive_bandage
+- Two opposite edges: baskets for items
+  * Survey basket bottom: warning sign
+  * Rescue basket bottom: helmet_with_cross
+
+Points for:
+- Surfacing inside octagon
+- Surfacing with each item (stay inside to continue)
+- Facing any image hanging from octagon (max for correct based on role+items):
+  * 1 item in basket: face compass (Survey) or ring_buoy (Rescue)
+  * 2+ items in basket: face hammer_pick (Survey) or SOS (Rescue)
+- Moving items to any basket (max for correct role basket)
+- Rotation bonus: rotate same number of turns as items in baskets
+  (3 items = rotate 3 times)
+
+Capability Matrix:
+- Core: Surface in octagon
+- Advanced: Pick up and deliver at least one object to any basket
+- Disruptive: Face correct image
+
+------------------------------------------------------------------------
+3.2.7 TASK 6 - RETURN HOME
+------------------------------------------------------------------------
+At end of run, WHILE UNDERWATER, AUV passes back through start gate.
+
+------------------------------------------------------------------------
+3.2.8 PATH
+------------------------------------------------------------------------
+- Path markers: ~4 ft (~1.2m) long x 6 in (15cm) wide
+- Color: ORANGE
+- Straight segments, points to next task
+- No points awarded for following path (guidance only)
+
+ONLY TWO PATH MARKERS:
+1. At gate -> points to Avoid Debris (Slalom)
+2. From Avoid Debris -> points to Recon (Bins)
+
+------------------------------------------------------------------------
+3.2.9 PINGER
+------------------------------------------------------------------------
+- Located very close to task (next to or center)
+- No points for finding pinger (guidance only)
+
+TWO PINGERS:
+1. At Deploy (Torpedoes)
+2. At Resupply (Octagon)

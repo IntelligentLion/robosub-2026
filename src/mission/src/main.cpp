@@ -24,6 +24,7 @@
 #include <optional>
 #include <cmath>
 #include <algorithm>
+#include <fstream>
 
 #include "std_msgs/msg/string.hpp"
 #include <rclcpp/rclcpp.hpp>
@@ -86,6 +87,28 @@ namespace Labels {
     const std::string TORPEDO_WHOLE  = "torpedo_whole";
     const std::string TORPEDO_HOLE   = "torpedo_hole";
     const std::string GATE           = "gate";
+
+    // 2026 "Restore and Recovery" labels
+    const std::string GATE_DIVIDER       = "gate_divider";
+    const std::string ROLE_SURVEY_REPAIR = "survey_repair_icon";
+    const std::string ROLE_SEARCH_RESCUE = "search_rescue_icon";
+    const std::string SLALOM_RED_PIPE    = "slalom_red_pipe";
+    const std::string SLALOM_WHITE_PIPE  = "slalom_white_pipe";
+    const std::string BIN_FIRE           = "bin_fire";
+    const std::string BIN_BLOOD          = "bin_blood";
+    const std::string PIPELINE           = "pipeline";
+    const std::string MAGNETIC_DETECTOR  = "magnetic_detector";
+    const std::string TORPEDO_BOARD      = "torpedo_board";
+    const std::string TORPEDO_LARGE_OPEN = "torpedo_large_opening";
+    const std::string TORPEDO_SMALL_OPEN = "torpedo_small_opening";
+    const std::string OCTAGON            = "octagon";
+    const std::string TABLE_ITEM         = "table_item";
+    const std::string BASKET             = "basket";
+    const std::string PATH_ORANGE        = "path_orange";
+    const std::string IMG_COMPASS        = "compass";
+    const std::string IMG_HAMMER_PICK    = "hammer_pick";
+    const std::string IMG_RING_BUOY      = "ring_buoy";
+    const std::string IMG_SOS            = "sos";
 }
 
 // =====================================================================
@@ -1516,7 +1539,1243 @@ public:
     }
 };
 
-// ─── Return Home ─────────────────────────────────────────────────────
+// =====================================================================
+//  2026 "RESTORE AND RECOVERY" BT NODES
+//  These nodes implement the new task-specific actions for the 2026
+//  behavior tree (robosub2026_mission.xml).
+// =====================================================================
+
+// ─── Detect_role_icons ──────────────────────────────────────────────
+class DetectRoleIcons : public BT::SyncActionNode
+{
+public:
+    explicit DetectRoleIcons(const std::string &name,
+                             const BT::NodeConfiguration &config)
+        : BT::SyncActionNode(name, config) {}
+
+    static BT::PortsList providedPorts()
+    {
+        return {BT::OutputPort<std::string>("survey_side"),
+                BT::OutputPort<std::string>("rescue_side"),
+                BT::OutputPort<float>("conf")};
+    }
+
+    BT::NodeStatus tick() override
+    {
+        cout << "[DetectRoleIcons] Scanning gate for role icons ..." << endl;
+        std::this_thread::sleep_for(500ms);
+
+        auto survey = g_vision->get(Labels::ROLE_SURVEY_REPAIR, DETECT_CONFIDENCE);
+        auto rescue = g_vision->get(Labels::ROLE_SEARCH_RESCUE, DETECT_CONFIDENCE);
+
+        if (survey && rescue)
+        {
+            std::string s_side = (survey->center_x < rescue->center_x) ? "L" : "R";
+            std::string r_side = (s_side == "L") ? "R" : "L";
+            float conf = std::min(survey->confidence, rescue->confidence);
+            setOutput("survey_side", s_side);
+            setOutput("rescue_side", r_side);
+            setOutput("conf", conf);
+            cout << "[DetectRoleIcons] Survey=" << s_side
+                 << " Rescue=" << r_side << " conf=" << conf << endl;
+            publish_status("DetectRoleIcons", "SUCCESS");
+            return BT::NodeStatus::SUCCESS;
+        }
+
+        if (survey)
+        {
+            std::string s_side = (survey->center_x < 0.5f) ? "L" : "R";
+            setOutput("survey_side", s_side);
+            setOutput("rescue_side", s_side == "L" ? std::string("R") : std::string("L"));
+            setOutput("conf", survey->confidence);
+            publish_status("DetectRoleIcons", "SUCCESS");
+            return BT::NodeStatus::SUCCESS;
+        }
+        if (rescue)
+        {
+            std::string r_side = (rescue->center_x < 0.5f) ? "L" : "R";
+            setOutput("rescue_side", r_side);
+            setOutput("survey_side", r_side == "L" ? std::string("R") : std::string("L"));
+            setOutput("conf", rescue->confidence);
+            publish_status("DetectRoleIcons", "SUCCESS");
+            return BT::NodeStatus::SUCCESS;
+        }
+
+        setOutput("conf", 0.0f);
+        publish_status("DetectRoleIcons", "FAILURE", "No role icons detected");
+        return BT::NodeStatus::FAILURE;
+    }
+};
+
+// ─── Detect_bins (2026: pipeline with role-specific bins) ───────────
+class DetectBins : public BT::SyncActionNode
+{
+public:
+    explicit DetectBins(const std::string &name,
+                        const BT::NodeConfiguration &config)
+        : BT::SyncActionNode(name, config) {}
+
+    static BT::PortsList providedPorts()
+    {
+        return {BT::OutputPort<std::string>("result"),
+                BT::InputPort<std::string>("role"),
+                BT::OutputPort<std::string>("correct_bins")};
+    }
+
+    BT::NodeStatus tick() override
+    {
+        cout << "[DetectBins] Scanning for bins ..." << endl;
+        std::this_thread::sleep_for(500ms);
+
+        auto role = getInput<std::string>("role").value();
+        std::string target_label = (role == "survey_repair")
+            ? Labels::BIN_FIRE : Labels::BIN_BLOOD;
+
+        auto det = g_vision->get(target_label, DETECT_CONFIDENCE);
+        auto pipeline = g_vision->get(Labels::PIPELINE, TRACK_CONFIDENCE);
+
+        if (det || pipeline)
+        {
+            setOutput("result", target_label);
+            setOutput("correct_bins", target_label);
+            publish_status("DetectBins", "SUCCESS");
+            return BT::NodeStatus::SUCCESS;
+        }
+
+        publish_status("DetectBins", "FAILURE", "Bins not detected");
+        return BT::NodeStatus::FAILURE;
+    }
+};
+
+// ─── Detect_torpedo_board (2026: role-specific board) ───────────────
+class DetectTorpedoBoard : public BT::SyncActionNode
+{
+public:
+    explicit DetectTorpedoBoard(const std::string &name,
+                                 const BT::NodeConfiguration &config)
+        : BT::SyncActionNode(name, config) {}
+
+    static BT::PortsList providedPorts()
+    {
+        return {BT::InputPort<std::string>("role"),
+                BT::OutputPort<std::string>("result"),
+                BT::OutputPort<std::string>("large_opening"),
+                BT::OutputPort<std::string>("small_opening")};
+    }
+
+    BT::NodeStatus tick() override
+    {
+        cout << "[DetectTorpedoBoard] Searching for torpedo board ..." << endl;
+
+        if (search_for(Labels::TORPEDO_BOARD, TIMEOUT_SEARCH))
+        {
+            auto large = g_vision->get(Labels::TORPEDO_LARGE_OPEN, TRACK_CONFIDENCE);
+            auto small = g_vision->get(Labels::TORPEDO_SMALL_OPEN, TRACK_CONFIDENCE);
+
+            setOutput("result", Labels::TORPEDO_BOARD);
+            setOutput("large_opening",
+                      large ? Labels::TORPEDO_LARGE_OPEN : Labels::TORPEDO_BOARD);
+            setOutput("small_opening",
+                      small ? Labels::TORPEDO_SMALL_OPEN : Labels::TORPEDO_BOARD);
+            publish_status("DetectTorpedoBoard", "SUCCESS");
+            return BT::NodeStatus::SUCCESS;
+        }
+
+        if (search_for(Labels::TORPEDO_WHOLE, TIMEOUT_SEARCH))
+        {
+            setOutput("result", Labels::TORPEDO_WHOLE);
+            setOutput("large_opening", Labels::TORPEDO_HOLE);
+            setOutput("small_opening", Labels::TORPEDO_HOLE);
+            publish_status("DetectTorpedoBoard", "SUCCESS", "Fallback to legacy labels");
+            return BT::NodeStatus::SUCCESS;
+        }
+
+        publish_status("DetectTorpedoBoard", "FAILURE");
+        return BT::NodeStatus::FAILURE;
+    }
+};
+
+// ─── Detect_octagon_below ───────────────────────────────────────────
+class DetectOctagonBelow : public BT::SyncActionNode
+{
+public:
+    explicit DetectOctagonBelow(const std::string &name,
+                                 const BT::NodeConfiguration &config)
+        : BT::SyncActionNode(name, config) {}
+
+    static BT::PortsList providedPorts()
+    {
+        return {BT::OutputPort<std::string>("result")};
+    }
+
+    BT::NodeStatus tick() override
+    {
+        cout << "[DetectOctagonBelow] Looking up for octagon ..." << endl;
+        std::this_thread::sleep_for(300ms);
+
+        auto det = g_vision->get(Labels::OCTAGON, DETECT_CONFIDENCE);
+        if (det)
+        {
+            setOutput("result", Labels::OCTAGON);
+            publish_status("DetectOctagonBelow", "SUCCESS");
+            return BT::NodeStatus::SUCCESS;
+        }
+        publish_status("DetectOctagonBelow", "FAILURE");
+        return BT::NodeStatus::FAILURE;
+    }
+};
+
+// ─── ConfirmOverhead ────────────────────────────────────────────────
+class ConfirmOverhead : public BT::SyncActionNode
+{
+public:
+    explicit ConfirmOverhead(const std::string &name,
+                              const BT::NodeConfiguration &config)
+        : BT::SyncActionNode(name, config) {}
+
+    static BT::PortsList providedPorts()
+    {
+        return {BT::OutputPort<std::string>("is_inside")};
+    }
+
+    BT::NodeStatus tick() override
+    {
+        cout << "[ConfirmOverhead] Verifying position under octagon ..." << endl;
+        auto det = g_vision->get(Labels::OCTAGON, TRACK_CONFIDENCE);
+        if (det && det->bbox_width > 0.4f)
+        {
+            setOutput("is_inside", std::string("true"));
+            publish_status("ConfirmOverhead", "SUCCESS");
+            return BT::NodeStatus::SUCCESS;
+        }
+        setOutput("is_inside", std::string("false"));
+        publish_status("ConfirmOverhead", "FAILURE");
+        return BT::NodeStatus::FAILURE;
+    }
+};
+
+// ─── SurfaceInOctagon ───────────────────────────────────────────────
+class SurfaceInOctagon : public BT::SyncActionNode
+{
+public:
+    explicit SurfaceInOctagon(const std::string &name)
+        : BT::SyncActionNode(name, {}) {}
+
+    BT::NodeStatus tick() override
+    {
+        cout << "[SurfaceInOctagon] Ascending to surface inside octagon ..." << endl;
+        execute_movement("emerge", 0.3f, 8.0f);
+        publish_status("SurfaceInOctagon", "SUCCESS");
+        return BT::NodeStatus::SUCCESS;
+    }
+};
+
+// ─── DetectHangingImage ─────────────────────────────────────────────
+class DetectHangingImage : public BT::SyncActionNode
+{
+public:
+    explicit DetectHangingImage(const std::string &name,
+                                 const BT::NodeConfiguration &config)
+        : BT::SyncActionNode(name, config) {}
+
+    static BT::PortsList providedPorts()
+    {
+        return {BT::InputPort<std::string>("target"),
+                BT::OutputPort<std::string>("dir")};
+    }
+
+    BT::NodeStatus tick() override
+    {
+        auto target = getInput<std::string>("target").value();
+        cout << "[DetectHangingImage] Looking for " << target << " ..." << endl;
+        std::this_thread::sleep_for(400ms);
+
+        auto det = g_vision->get(target, DETECT_CONFIDENCE);
+        if (det)
+        {
+            float angle = (det->center_x - 0.5f) * 90.0f;
+            setOutput("dir", std::to_string(angle));
+            publish_status("DetectHangingImage", "SUCCESS");
+            return BT::NodeStatus::SUCCESS;
+        }
+        publish_status("DetectHangingImage", "FAILURE");
+        return BT::NodeStatus::FAILURE;
+    }
+};
+
+// ─── DetermineFaceImage ─────────────────────────────────────────────
+class DetermineFaceImage : public BT::SyncActionNode
+{
+public:
+    explicit DetermineFaceImage(const std::string &name,
+                                 const BT::NodeConfiguration &config)
+        : BT::SyncActionNode(name, config) {}
+
+    static BT::PortsList providedPorts()
+    {
+        return {BT::InputPort<std::string>("role"),
+                BT::InputPort<int>("items_count"),
+                BT::OutputPort<std::string>("target_image")};
+    }
+
+    BT::NodeStatus tick() override
+    {
+        auto role = getInput<std::string>("role").value();
+        auto items = getInput<int>("items_count").value();
+
+        std::string target;
+        if (role == "survey_repair")
+            target = (items >= 2) ? Labels::IMG_HAMMER_PICK : Labels::IMG_COMPASS;
+        else
+            target = (items >= 2) ? Labels::IMG_SOS : Labels::IMG_RING_BUOY;
+
+        setOutput("target_image", target);
+        cout << "[DetermineFaceImage] role=" << role
+             << " items=" << items << " -> face " << target << endl;
+        publish_status("DetermineFaceImage", "SUCCESS");
+        return BT::NodeStatus::SUCCESS;
+    }
+};
+
+// ─── DetectTableItem ────────────────────────────────────────────────
+class DetectTableItem : public BT::SyncActionNode
+{
+public:
+    explicit DetectTableItem(const std::string &name,
+                              const BT::NodeConfiguration &config)
+        : BT::SyncActionNode(name, config) {}
+
+    static BT::PortsList providedPorts()
+    {
+        return {BT::InputPort<std::string>("role"),
+                BT::OutputPort<std::string>("result"),
+                BT::OutputPort<std::string>("item_type")};
+    }
+
+    BT::NodeStatus tick() override
+    {
+        cout << "[DetectTableItem] Searching for items on table ..." << endl;
+        auto det = g_vision->get(Labels::TABLE_ITEM, DETECT_CONFIDENCE);
+        if (det)
+        {
+            setOutput("result", Labels::TABLE_ITEM);
+            setOutput("item_type", Labels::TABLE_ITEM);
+            publish_status("DetectTableItem", "SUCCESS");
+            return BT::NodeStatus::SUCCESS;
+        }
+        publish_status("DetectTableItem", "FAILURE");
+        return BT::NodeStatus::FAILURE;
+    }
+};
+
+// ─── DetermineBasket2026 ────────────────────────────────────────────
+class DetermineBasket2026 : public BT::SyncActionNode
+{
+public:
+    explicit DetermineBasket2026(const std::string &name,
+                                  const BT::NodeConfiguration &config)
+        : BT::SyncActionNode(name, config) {}
+
+    static BT::PortsList providedPorts()
+    {
+        return {BT::InputPort<std::string>("role"),
+                BT::InputPort<std::string>("item_type"),
+                BT::OutputPort<std::string>("basket")};
+    }
+
+    BT::NodeStatus tick() override
+    {
+        auto role = getInput<std::string>("role").value();
+        std::string basket = (role == "survey_repair") ? "survey_basket" : "rescue_basket";
+        setOutput("basket", basket);
+        publish_status("DetermineBasket2026", "SUCCESS");
+        return BT::NodeStatus::SUCCESS;
+    }
+};
+
+// ─── DetectMagneticDetector ─────────────────────────────────────────
+class DetectMagneticDetector : public BT::SyncActionNode
+{
+public:
+    explicit DetectMagneticDetector(const std::string &name,
+                                     const BT::NodeConfiguration &config)
+        : BT::SyncActionNode(name, config) {}
+
+    static BT::PortsList providedPorts()
+    {
+        return {BT::OutputPort<std::string>("result")};
+    }
+
+    BT::NodeStatus tick() override
+    {
+        cout << "[DetectMagneticDetector] Searching ..." << endl;
+        auto det = g_vision->get(Labels::MAGNETIC_DETECTOR, DETECT_CONFIDENCE);
+        if (det)
+        {
+            setOutput("result", Labels::MAGNETIC_DETECTOR);
+            publish_status("DetectMagneticDetector", "SUCCESS");
+            return BT::NodeStatus::SUCCESS;
+        }
+        publish_status("DetectMagneticDetector", "FAILURE");
+        return BT::NodeStatus::FAILURE;
+    }
+};
+
+// ─── ApproachAndInteract ────────────────────────────────────────────
+class ApproachAndInteract : public BT::SyncActionNode
+{
+public:
+    explicit ApproachAndInteract(const std::string &name,
+                                  const BT::NodeConfiguration &config)
+        : BT::SyncActionNode(name, config) {}
+
+    static BT::PortsList providedPorts()
+    {
+        return {BT::InputPort<std::string>("target")};
+    }
+
+    BT::NodeStatus tick() override
+    {
+        auto target = getInput<std::string>("target").value();
+        cout << "[ApproachAndInteract] Approaching " << target << " ..." << endl;
+        if (approach(target, CLOSE_W, 15.0f))
+        {
+            g_movement_pub->stop();
+            std::this_thread::sleep_for(2s);
+            publish_status("ApproachAndInteract", "SUCCESS");
+            return BT::NodeStatus::SUCCESS;
+        }
+        execute_movement("surge_forward", 0.2f, 3.0f);
+        publish_status("ApproachAndInteract", "SUCCESS", "Fallback");
+        return BT::NodeStatus::SUCCESS;
+    }
+};
+
+// ─── SetFiringDistance ──────────────────────────────────────────────
+class SetFiringDistance : public BT::SyncActionNode
+{
+public:
+    explicit SetFiringDistance(const std::string &name,
+                                const BT::NodeConfiguration &config)
+        : BT::SyncActionNode(name, config) {}
+
+    static BT::PortsList providedPorts()
+    {
+        return {BT::InputPort<float>("dist")};
+    }
+
+    BT::NodeStatus tick() override
+    {
+        auto dist = getInput<float>("dist").value();
+        cout << "[SetFiringDistance] Backing off to " << dist << "m ..." << endl;
+        execute_movement("surge_backward", 0.3f, dist * 3.0f);
+        publish_status("SetFiringDistance", "SUCCESS");
+        return BT::NodeStatus::SUCCESS;
+    }
+};
+
+// ─── AlignToOpening ────────────────────────────────────────────────
+class AlignToOpening : public BT::SyncActionNode
+{
+public:
+    explicit AlignToOpening(const std::string &name,
+                             const BT::NodeConfiguration &config)
+        : BT::SyncActionNode(name, config) {}
+
+    static BT::PortsList providedPorts()
+    {
+        return {BT::InputPort<std::string>("opening")};
+    }
+
+    BT::NodeStatus tick() override
+    {
+        auto opening = getInput<std::string>("opening").value();
+        cout << "[AlignToOpening] Centering on " << opening << " ..." << endl;
+        if (centre_on(opening, TIMEOUT_CENTER))
+        {
+            publish_status("AlignToOpening", "SUCCESS");
+            return BT::NodeStatus::SUCCESS;
+        }
+        if (centre_on(Labels::TORPEDO_WHOLE, 8.0f))
+        {
+            publish_status("AlignToOpening", "SUCCESS", "Fallback to board center");
+            return BT::NodeStatus::SUCCESS;
+        }
+        publish_status("AlignToOpening", "FAILURE");
+        return BT::NodeStatus::FAILURE;
+    }
+};
+
+// ─── FireTorpedo ───────────────────────────────────────────────────
+class FireTorpedo : public BT::SyncActionNode
+{
+public:
+    explicit FireTorpedo(const std::string &name,
+                          const BT::NodeConfiguration &config)
+        : BT::SyncActionNode(name, config) {}
+
+    static BT::PortsList providedPorts()
+    {
+        return {BT::InputPort<std::string>("tube")};
+    }
+
+    BT::NodeStatus tick() override
+    {
+        auto tube = getInput<std::string>("tube").value();
+        cout << "[FireTorpedo] Firing tube " << tube << " ..." << endl;
+        g_movement_pub->stop();
+        // TODO: trigger torpedo actuator for specified tube
+        std::this_thread::sleep_for(3s);
+        publish_status("FireTorpedo", "SUCCESS");
+        return BT::NodeStatus::SUCCESS;
+    }
+};
+
+// ─── GrabObject ────────────────────────────────────────────────────
+class GrabObject : public BT::SyncActionNode
+{
+public:
+    explicit GrabObject(const std::string &name)
+        : BT::SyncActionNode(name, {}) {}
+
+    BT::NodeStatus tick() override
+    {
+        cout << "[GrabObject] Grabbing object ..." << endl;
+        g_movement_pub->stop();
+        // TODO: trigger gripper/claw actuator
+        std::this_thread::sleep_for(2s);
+        publish_status("GrabObject", "SUCCESS");
+        return BT::NodeStatus::SUCCESS;
+    }
+};
+
+// ─── ReleaseObject ─────────────────────────────────────────────────
+class ReleaseObject : public BT::SyncActionNode
+{
+public:
+    explicit ReleaseObject(const std::string &name)
+        : BT::SyncActionNode(name, {}) {}
+
+    BT::NodeStatus tick() override
+    {
+        cout << "[ReleaseObject] Releasing object ..." << endl;
+        g_movement_pub->stop();
+        // TODO: trigger gripper/claw release
+        std::this_thread::sleep_for(2s);
+        publish_status("ReleaseObject", "SUCCESS");
+        return BT::NodeStatus::SUCCESS;
+    }
+};
+
+// ─── AlignToBasket ─────────────────────────────────────────────────
+class AlignToBasket : public BT::SyncActionNode
+{
+public:
+    explicit AlignToBasket(const std::string &name,
+                            const BT::NodeConfiguration &config)
+        : BT::SyncActionNode(name, config) {}
+
+    static BT::PortsList providedPorts()
+    {
+        return {BT::InputPort<std::string>("basket")};
+    }
+
+    BT::NodeStatus tick() override
+    {
+        auto basket = getInput<std::string>("basket").value();
+        cout << "[AlignToBasket] Moving to " << basket << " ..." << endl;
+        if (search_for(Labels::BASKET, 12.0f))
+        {
+            centre_on(Labels::BASKET, 10.0f);
+            approach(Labels::BASKET, APPROACH_W, 12.0f);
+        }
+        else
+        {
+            execute_movement("surge_forward", 0.3f, 3.0f);
+        }
+        publish_status("AlignToBasket", "SUCCESS");
+        return BT::NodeStatus::SUCCESS;
+    }
+};
+
+// ─── RotationBonus ─────────────────────────────────────────────────
+class RotationBonus : public BT::SyncActionNode
+{
+public:
+    explicit RotationBonus(const std::string &name,
+                            const BT::NodeConfiguration &config)
+        : BT::SyncActionNode(name, config) {}
+
+    static BT::PortsList providedPorts()
+    {
+        return {BT::InputPort<int>("count")};
+    }
+
+    BT::NodeStatus tick() override
+    {
+        auto count = getInput<int>("count").value();
+        cout << "[RotationBonus] Rotating " << count << " times ..." << endl;
+        for (int i = 0; i < count; ++i)
+        {
+            execute_movement("rotate_cw", 0.5f, 4.5f);
+            std::this_thread::sleep_for(500ms);
+        }
+        publish_status("RotationBonus", "SUCCESS");
+        return BT::NodeStatus::SUCCESS;
+    }
+};
+
+// ─── IncrementCounter ──────────────────────────────────────────────
+class IncrementCounter : public BT::SyncActionNode
+{
+public:
+    explicit IncrementCounter(const std::string &name,
+                               const BT::NodeConfiguration &config)
+        : BT::SyncActionNode(name, config) {}
+
+    static BT::PortsList providedPorts()
+    {
+        return {BT::InputPort<std::string>("key"),
+                BT::InputPort<int>("current_val"),
+                BT::OutputPort<int>("new_val")};
+    }
+
+    BT::NodeStatus tick() override
+    {
+        int val = 0;
+        auto r = getInput<int>("current_val");
+        if (r) val = r.value();
+        setOutput("new_val", val + 1);
+        publish_status("Increment", "SUCCESS");
+        return BT::NodeStatus::SUCCESS;
+    }
+};
+
+// ─── FaceDirection ─────────────────────────────────────────────────
+class FaceDirection : public BT::SyncActionNode
+{
+public:
+    explicit FaceDirection(const std::string &name,
+                            const BT::NodeConfiguration &config)
+        : BT::SyncActionNode(name, config) {}
+
+    static BT::PortsList providedPorts()
+    {
+        return {BT::InputPort<std::string>("dir")};
+    }
+
+    BT::NodeStatus tick() override
+    {
+        auto dir_str = getInput<std::string>("dir").value();
+        float angle = std::stof(dir_str);
+        cout << "[FaceDirection] Turning " << angle << " degrees ..." << endl;
+        if (std::abs(angle) > 5.0f)
+        {
+            float duration = std::abs(angle) / 30.0f;
+            execute_movement(angle > 0 ? "rotate_cw" : "rotate_ccw",
+                             0.3f, duration);
+        }
+        publish_status("FaceDirection", "SUCCESS");
+        return BT::NodeStatus::SUCCESS;
+    }
+};
+
+// ─── DetectSlalomPipes ─────────────────────────────────────────────
+class DetectSlalomPipes : public BT::SyncActionNode
+{
+public:
+    explicit DetectSlalomPipes(const std::string &name,
+                                const BT::NodeConfiguration &config)
+        : BT::SyncActionNode(name, config) {}
+
+    static BT::PortsList providedPorts()
+    {
+        return {BT::OutputPort<std::string>("result")};
+    }
+
+    BT::NodeStatus tick() override
+    {
+        cout << "[DetectSlalomPipes] Scanning for slalom pipes ..." << endl;
+        std::this_thread::sleep_for(400ms);
+
+        auto red = g_vision->get(Labels::SLALOM_RED_PIPE, DETECT_CONFIDENCE);
+        auto white = g_vision->get(Labels::SLALOM_WHITE_PIPE, DETECT_CONFIDENCE);
+
+        if (red || white)
+        {
+            setOutput("result", Labels::SLALOM_RED_PIPE);
+            publish_status("DetectSlalomPipes", "SUCCESS");
+            return BT::NodeStatus::SUCCESS;
+        }
+
+        auto cw = g_vision->get(Labels::CW_RED_GATE, DETECT_CONFIDENCE);
+        auto ccw = g_vision->get(Labels::CCW_BLUE_GATE, DETECT_CONFIDENCE);
+        if (cw || ccw)
+        {
+            setOutput("result", Labels::CW_RED_GATE);
+            publish_status("DetectSlalomPipes", "SUCCESS", "Fallback legacy labels");
+            return BT::NodeStatus::SUCCESS;
+        }
+
+        publish_status("DetectSlalomPipes", "FAILURE");
+        return BT::NodeStatus::FAILURE;
+    }
+};
+
+// ─── ComputeSlalomPath ─────────────────────────────────────────────
+class ComputeSlalomPath : public BT::SyncActionNode
+{
+public:
+    explicit ComputeSlalomPath(const std::string &name,
+                                 const BT::NodeConfiguration &config)
+        : BT::SyncActionNode(name, config) {}
+
+    static BT::PortsList providedPorts()
+    {
+        return {BT::InputPort<std::string>("side"),
+                BT::InputPort<std::string>("pipes"),
+                BT::OutputPort<std::string>("waypoint")};
+    }
+
+    BT::NodeStatus tick() override
+    {
+        auto side = getInput<std::string>("side").value();
+        cout << "[ComputeSlalomPath] Computing path on side " << side << endl;
+        setOutput("waypoint", "slalom_" + side);
+        publish_status("ComputeSlalomPath", "SUCCESS");
+        return BT::NodeStatus::SUCCESS;
+    }
+};
+
+// ─── DetectPathMarker ──────────────────────────────────────────────
+class DetectPathMarker : public BT::SyncActionNode
+{
+public:
+    explicit DetectPathMarker(const std::string &name,
+                                const BT::NodeConfiguration &config)
+        : BT::SyncActionNode(name, config) {}
+
+    static BT::PortsList providedPorts()
+    {
+        return {BT::InputPort<std::string>("color"),
+                BT::OutputPort<std::string>("result")};
+    }
+
+    BT::NodeStatus tick() override
+    {
+        cout << "[DetectPathMarker] Looking for orange path ..." << endl;
+        std::this_thread::sleep_for(400ms);
+
+        auto det = g_vision->get(Labels::PATH_ORANGE, DETECT_CONFIDENCE);
+        if (det)
+        {
+            setOutput("result", Labels::PATH_ORANGE);
+            publish_status("DetectPathMarker", "SUCCESS");
+            return BT::NodeStatus::SUCCESS;
+        }
+        publish_status("DetectPathMarker", "FAILURE");
+        return BT::NodeStatus::FAILURE;
+    }
+};
+
+// ─── CenterBeneath ─────────────────────────────────────────────────
+class CenterBeneath : public BT::SyncActionNode
+{
+public:
+    explicit CenterBeneath(const std::string &name,
+                            const BT::NodeConfiguration &config)
+        : BT::SyncActionNode(name, config) {}
+
+    static BT::PortsList providedPorts()
+    {
+        return {BT::InputPort<std::string>("target")};
+    }
+
+    BT::NodeStatus tick() override
+    {
+        auto target = getInput<std::string>("target").value();
+        cout << "[CenterBeneath] Centering under " << target << " ..." << endl;
+        if (centre_on(target, TIMEOUT_CENTER))
+        {
+            publish_status("CenterBeneath", "SUCCESS");
+            return BT::NodeStatus::SUCCESS;
+        }
+        publish_status("CenterBeneath", "FAILURE");
+        return BT::NodeStatus::FAILURE;
+    }
+};
+
+// ─── IsInsideOctagon (condition) ───────────────────────────────────
+BT::NodeStatus IsInsideOctagon_check(BT::TreeNode &self)
+{
+    auto val = self.getInput<std::string>("val");
+    if (val && val.value() == "true")
+        return BT::NodeStatus::SUCCESS;
+    return BT::NodeStatus::FAILURE;
+}
+
+// =====================================================================
+//  FUNDAMENTAL NAVIGATION / CONTROL NODES (used by 2026 XML)
+// =====================================================================
+
+class AscendTo : public BT::SyncActionNode
+{
+public:
+    explicit AscendTo(const std::string &name, const BT::NodeConfiguration &config)
+        : BT::SyncActionNode(name, config) {}
+    static BT::PortsList providedPorts()
+    { return {BT::InputPort<float>("target_depth")}; }
+    BT::NodeStatus tick() override
+    {
+        auto depth = getInput<float>("target_depth").value();
+        cout << "[AscendTo] Ascending to " << depth << "m ..." << endl;
+        execute_movement("emerge", 0.3f, 4.0f);
+        publish_status("AscendTo", "SUCCESS");
+        return BT::NodeStatus::SUCCESS;
+    }
+};
+
+class TurnAction : public BT::SyncActionNode
+{
+public:
+    explicit TurnAction(const std::string &name, const BT::NodeConfiguration &config)
+        : BT::SyncActionNode(name, config) {}
+    static BT::PortsList providedPorts()
+    { return {BT::InputPort<float>("degrees")}; }
+    BT::NodeStatus tick() override
+    {
+        auto deg = getInput<float>("degrees").value();
+        float dur = std::abs(deg) / 30.0f;
+        cout << "[Turn] Rotating " << deg << " degrees ..." << endl;
+        execute_movement(deg > 0 ? "rotate_cw" : "rotate_ccw", 0.5f, dur);
+        publish_status("Turn", "SUCCESS");
+        return BT::NodeStatus::SUCCESS;
+    }
+};
+
+class WaitAction : public BT::SyncActionNode
+{
+public:
+    explicit WaitAction(const std::string &name, const BT::NodeConfiguration &config)
+        : BT::SyncActionNode(name, config) {}
+    static BT::PortsList providedPorts()
+    { return {BT::InputPort<int>("msec")}; }
+    BT::NodeStatus tick() override
+    {
+        auto ms = getInput<int>("msec").value();
+        std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+        return BT::NodeStatus::SUCCESS;
+    }
+};
+
+class StabilizeAction : public BT::SyncActionNode
+{
+public:
+    explicit StabilizeAction(const std::string &name, const BT::NodeConfiguration &config)
+        : BT::SyncActionNode(name, config) {}
+    static BT::PortsList providedPorts()
+    { return {BT::InputPort<int>("msec", "1000")}; }
+    BT::NodeStatus tick() override
+    {
+        auto ms = getInput<int>("msec").value();
+        cout << "[Stabilize] Holding position for " << ms << "ms ..." << endl;
+        if (g_nav_pub) g_nav_pub->station_keep();
+        std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+        publish_status("Stabilize", "SUCCESS");
+        return BT::NodeStatus::SUCCESS;
+    }
+};
+
+class EmergencySurfaceAction : public BT::SyncActionNode
+{
+public:
+    explicit EmergencySurfaceAction(const std::string &name, const BT::NodeConfiguration &config)
+        : BT::SyncActionNode(name, config) {}
+    static BT::PortsList providedPorts()
+    { return {BT::InputPort<std::string>("reason")}; }
+    BT::NodeStatus tick() override
+    {
+        auto reason = getInput<std::string>("reason").value();
+        cout << "[EmergencySurface] EMERGENCY: " << reason << endl;
+        if (g_movement_pub) { g_movement_pub->stop(); g_movement_pub->emerge(0.6f); }
+        publish_status("EmergencySurface", "TRIGGERED", reason);
+        return BT::NodeStatus::SUCCESS;
+    }
+};
+
+class NavigateToAction : public BT::SyncActionNode
+{
+public:
+    explicit NavigateToAction(const std::string &name, const BT::NodeConfiguration &config)
+        : BT::SyncActionNode(name, config) {}
+    static BT::PortsList providedPorts()
+    { return {BT::InputPort<std::string>("waypoint")}; }
+    BT::NodeStatus tick() override
+    {
+        auto wp = getInput<std::string>("waypoint").value();
+        cout << "[Navigate_to] Going to " << wp << " ..." << endl;
+        execute_movement("surge_forward", 0.4f, 8.0f);
+        publish_status("Navigate_to", "SUCCESS");
+        return BT::NodeStatus::SUCCESS;
+    }
+};
+
+class NavigateToBearingAction : public BT::SyncActionNode
+{
+public:
+    explicit NavigateToBearingAction(const std::string &name, const BT::NodeConfiguration &config)
+        : BT::SyncActionNode(name, config) {}
+    static BT::PortsList providedPorts()
+    {
+        return {BT::InputPort<std::string>("bearing"),
+                BT::InputPort<float>("stop_dist", "1.0")};
+    }
+    BT::NodeStatus tick() override
+    {
+        cout << "[Navigate_to_bearing] Following bearing ..." << endl;
+        execute_movement("surge_forward", 0.4f, 10.0f);
+        publish_status("Navigate_to_bearing", "SUCCESS");
+        return BT::NodeStatus::SUCCESS;
+    }
+};
+
+class NavigateOnHeadingAction : public BT::SyncActionNode
+{
+public:
+    explicit NavigateOnHeadingAction(const std::string &name, const BT::NodeConfiguration &config)
+        : BT::SyncActionNode(name, config) {}
+    static BT::PortsList providedPorts()
+    {
+        return {BT::InputPort<std::string>("heading"),
+                BT::InputPort<float>("dist")};
+    }
+    BT::NodeStatus tick() override
+    {
+        auto dist = getInput<float>("dist").value();
+        cout << "[Navigate_on_heading] Traveling " << dist << "m ..." << endl;
+        float dur = std::min(dist * 1.5f, 20.0f);
+        execute_movement("surge_forward", 0.5f, dur);
+        publish_status("Navigate_on_heading", "SUCCESS");
+        return BT::NodeStatus::SUCCESS;
+    }
+};
+
+class HoldDepthAction : public BT::SyncActionNode
+{
+public:
+    explicit HoldDepthAction(const std::string &name, const BT::NodeConfiguration &config)
+        : BT::SyncActionNode(name, config) {}
+    static BT::PortsList providedPorts()
+    {
+        return {BT::InputPort<float>("target"),
+                BT::InputPort<float>("tol", "0.2")};
+    }
+    BT::NodeStatus tick() override
+    {
+        if (g_movement_pub) g_movement_pub->depth_hold();
+        std::this_thread::sleep_for(1s);
+        publish_status("Hold_depth", "SUCCESS");
+        return BT::NodeStatus::SUCCESS;
+    }
+};
+
+class MoveThruGateAction : public BT::SyncActionNode
+{
+public:
+    explicit MoveThruGateAction(const std::string &name)
+        : BT::SyncActionNode(name, {}) {}
+    BT::NodeStatus tick() override
+    {
+        cout << "[Move_through_gate] Passing through gate ..." << endl;
+        if (pass_through(Labels::GATE, TIMEOUT_PASS))
+        {
+            publish_status("Move_through_gate", "SUCCESS");
+            return BT::NodeStatus::SUCCESS;
+        }
+        execute_movement("surge_forward", 0.3f, 8.0f);
+        publish_status("Move_through_gate", "SUCCESS", "Fallback surge");
+        return BT::NodeStatus::SUCCESS;
+    }
+};
+
+class RepositionToGateSideAction : public BT::SyncActionNode
+{
+public:
+    explicit RepositionToGateSideAction(const std::string &name, const BT::NodeConfiguration &config)
+        : BT::SyncActionNode(name, config) {}
+    static BT::PortsList providedPorts()
+    { return {BT::InputPort<std::string>("side")}; }
+    BT::NodeStatus tick() override
+    {
+        auto side = getInput<std::string>("side").value();
+        cout << "[Reposition_to_gate_side] Moving to " << side << " side ..." << endl;
+        if (side == "L")
+            execute_movement("strafe_left", 0.35f, 3.0f);
+        else
+            execute_movement("strafe_right", 0.35f, 3.0f);
+        publish_status("Reposition_to_gate_side", "SUCCESS");
+        return BT::NodeStatus::SUCCESS;
+    }
+};
+
+class RecordHeadingAction : public BT::SyncActionNode
+{
+public:
+    explicit RecordHeadingAction(const std::string &name, const BT::NodeConfiguration &config)
+        : BT::SyncActionNode(name, config) {}
+    static BT::PortsList providedPorts()
+    { return {BT::OutputPort<float>("heading")}; }
+    BT::NodeStatus tick() override
+    {
+        float yaw = g_localization ? g_localization->yaw() : 0.0f;
+        setOutput("heading", yaw);
+        cout << "[Record_heading] Recorded heading: " << yaw << " rad" << endl;
+        publish_status("Record_heading", "SUCCESS");
+        return BT::NodeStatus::SUCCESS;
+    }
+};
+
+class RecalibrateNavAction : public BT::SyncActionNode
+{
+public:
+    explicit RecalibrateNavAction(const std::string &name)
+        : BT::SyncActionNode(name, {}) {}
+    BT::NodeStatus tick() override
+    {
+        cout << "[Recalibrate_nav] Recalibrating ..." << endl;
+        if (g_nav_pub) g_nav_pub->station_keep(0.3f);
+        std::this_thread::sleep_for(1s);
+        publish_status("Recalibrate_nav", "SUCCESS");
+        return BT::NodeStatus::SUCCESS;
+    }
+};
+
+class ComputeReverseHeadingAction : public BT::SyncActionNode
+{
+public:
+    explicit ComputeReverseHeadingAction(const std::string &name, const BT::NodeConfiguration &config)
+        : BT::SyncActionNode(name, config) {}
+    static BT::PortsList providedPorts()
+    {
+        return {BT::InputPort<float>("gate_heading"),
+                BT::OutputPort<float>("result")};
+    }
+    BT::NodeStatus tick() override
+    {
+        auto heading = getInput<float>("gate_heading").value();
+        float reverse = heading + M_PI;
+        if (reverse > M_PI) reverse -= 2.0f * M_PI;
+        setOutput("result", reverse);
+        publish_status("Compute_reverse_heading", "SUCCESS");
+        return BT::NodeStatus::SUCCESS;
+    }
+};
+
+class StyleThruGateAction : public BT::SyncActionNode
+{
+public:
+    explicit StyleThruGateAction(const std::string &name, const BT::NodeConfiguration &config)
+        : BT::SyncActionNode(name, config) {}
+    static BT::PortsList providedPorts()
+    {
+        return {BT::InputPort<std::string>("type", "barrel_roll"),
+                BT::InputPort<std::string>("det")};
+    }
+    BT::NodeStatus tick() override
+    {
+        cout << "[Style_through_gate] Attempting style pass ..." << endl;
+        execute_movement("rotate_cw", 0.6f, 1.0f);
+        if (pass_through(Labels::GATE, TIMEOUT_PASS))
+        {
+            execute_movement("rotate_ccw", 0.6f, 1.0f);
+            publish_status("Style_through_gate", "SUCCESS");
+            return BT::NodeStatus::SUCCESS;
+        }
+        publish_status("Style_through_gate", "FAILURE");
+        return BT::NodeStatus::FAILURE;
+    }
+};
+
+class DetectGateAction : public BT::SyncActionNode
+{
+public:
+    explicit DetectGateAction(const std::string &name, const BT::NodeConfiguration &config)
+        : BT::SyncActionNode(name, config) {}
+    static BT::PortsList providedPorts()
+    { return {BT::OutputPort<std::string>("result")}; }
+    BT::NodeStatus tick() override
+    {
+        cout << "[Detect_gate] Checking for gate ..." << endl;
+        std::this_thread::sleep_for(500ms);
+        int hits = 0;
+        for (int i = 0; i < 5 && rclcpp::ok(); ++i)
+        {
+            if (g_vision->has(Labels::GATE, DETECT_CONFIDENCE)) ++hits;
+            std::this_thread::sleep_for(200ms);
+        }
+        if (hits >= 3)
+        {
+            setOutput("result", Labels::GATE);
+            publish_status("Detect_gate", "SUCCESS");
+            return BT::NodeStatus::SUCCESS;
+        }
+        publish_status("Detect_gate", "FAILURE");
+        return BT::NodeStatus::FAILURE;
+    }
+};
+
+class AlignToAction : public BT::SyncActionNode
+{
+public:
+    explicit AlignToAction(const std::string &name, const BT::NodeConfiguration &config)
+        : BT::SyncActionNode(name, config) {}
+    static BT::PortsList providedPorts()
+    { return {BT::InputPort<std::string>("detection")}; }
+    BT::NodeStatus tick() override
+    {
+        auto label = getInput<std::string>("detection").value();
+        cout << "[Align_to] Centering on " << label << " ..." << endl;
+        centre_on(label, TIMEOUT_CENTER);
+        publish_status("Align_to", "SUCCESS");
+        return BT::NodeStatus::SUCCESS;
+    }
+};
+
+class AlignAboveAction : public BT::SyncActionNode
+{
+public:
+    explicit AlignAboveAction(const std::string &name, const BT::NodeConfiguration &config)
+        : BT::SyncActionNode(name, config) {}
+    static BT::PortsList providedPorts()
+    {
+        return {BT::InputPort<std::string>("target"),
+                BT::InputPort<std::string>("bin_index", "0")};
+    }
+    BT::NodeStatus tick() override
+    {
+        auto target = getInput<std::string>("target").value();
+        cout << "[Align_above] Positioning above " << target << " ..." << endl;
+        if (search_for(target, 12.0f))
+        {
+            centre_on(target, 10.0f);
+            approach(target, APPROACH_W, 12.0f);
+        }
+        else
+        {
+            execute_movement("surge_forward", 0.3f, 5.0f);
+        }
+        publish_status("Align_above", "SUCCESS");
+        return BT::NodeStatus::SUCCESS;
+    }
+};
+
+class DetectPingerAction : public BT::SyncActionNode
+{
+public:
+    explicit DetectPingerAction(const std::string &name, const BT::NodeConfiguration &config)
+        : BT::SyncActionNode(name, config) {}
+    static BT::PortsList providedPorts()
+    {
+        return {BT::InputPort<float>("freq_min"),
+                BT::InputPort<float>("freq_max"),
+                BT::OutputPort<std::string>("bearing")};
+    }
+    BT::NodeStatus tick() override
+    {
+        cout << "[Detect_pinger] Listening for pinger ..." << endl;
+        // TODO: integrate with hydrophone hardware
+        std::this_thread::sleep_for(2s);
+        setOutput("bearing", std::string("0.0"));
+        publish_status("Detect_pinger", "SUCCESS");
+        return BT::NodeStatus::SUCCESS;
+    }
+};
+
+class FollowPathAction : public BT::SyncActionNode
+{
+public:
+    explicit FollowPathAction(const std::string &name, const BT::NodeConfiguration &config)
+        : BT::SyncActionNode(name, config) {}
+    static BT::PortsList providedPorts()
+    { return {BT::InputPort<std::string>("detection")}; }
+    BT::NodeStatus tick() override
+    {
+        cout << "[Follow_path] Following path marker ..." << endl;
+        if (g_nav_pub) g_nav_pub->idle();
+        auto t0 = SteadyClock::now();
+        int frames_without = 0;
+        while (rclcpp::ok() && elapsed_s(t0) < 20.0)
+        {
+            auto det = g_vision->get(Labels::PATH_ORANGE, TRACK_CONFIDENCE);
+            if (det)
+            {
+                frames_without = 0;
+                float ex = det->center_x - 0.5f;
+                if (std::abs(ex) > CENTER_TOL)
+                {
+                    float yaw = std::clamp(std::abs(ex) * 1.5f, 0.10f, 0.30f);
+                    g_movement_pub->publish_command(
+                        ex > 0 ? "rotate_cw" : "rotate_ccw", yaw, 0);
+                }
+                g_movement_pub->surge_forward(0.40f);
+            }
+            else
+            {
+                if (++frames_without >= 10)
+                {
+                    if (g_nav_pub) g_nav_pub->station_keep();
+                    break;
+                }
+                g_movement_pub->surge_forward(0.25f);
+            }
+            std::this_thread::sleep_for(CTRL_PERIOD);
+        }
+        if (g_nav_pub) g_nav_pub->station_keep();
+        publish_status("Follow_path", "SUCCESS");
+        return BT::NodeStatus::SUCCESS;
+    }
+};
+
+// ─── Condition nodes for SafetyMonitor ─────────────────────────────
+BT::NodeStatus IsBatteryOk_check(BT::TreeNode &self)
+{
+    auto min_pct = self.getInput<float>("min_pct");
+    auto batt = self.getInput<float>("battery_pct");
+    if (batt && min_pct && batt.value() >= min_pct.value())
+        return BT::NodeStatus::SUCCESS;
+    if (!batt) return BT::NodeStatus::SUCCESS;
+    return BT::NodeStatus::FAILURE;
+}
+
+BT::NodeStatus IsLeakDetected_check(BT::TreeNode &self)
+{
+    auto leak = self.getInput<std::string>("leak");
+    if (leak && leak.value() == "true")
+        return BT::NodeStatus::SUCCESS;
+    return BT::NodeStatus::FAILURE;
+}
+
+BT::NodeStatus IsDepthSafe_check(BT::TreeNode &self)
+{
+    auto depth = self.getInput<float>("depth");
+    auto max_d = self.getInput<float>("max_depth");
+    auto min_d = self.getInput<float>("min_depth");
+    if (!depth) return BT::NodeStatus::SUCCESS;
+    float d = depth.value();
+    if (max_d && d > max_d.value()) return BT::NodeStatus::FAILURE;
+    if (min_d && d < min_d.value()) return BT::NodeStatus::FAILURE;
+    return BT::NodeStatus::SUCCESS;
+}
+
+BT::NodeStatus IsTimeRemaining_check(BT::TreeNode &self)
+{
+    auto min_sec = self.getInput<float>("min_sec");
+    // Always return SUCCESS — actual timing handled by mission timeout
+    (void)min_sec;
+    return BT::NodeStatus::SUCCESS;
+}
+
+// ─── Return Home (legacy nodes) ─────────────────────────────────────
 
 class Move_to_depth_taken_for_Navigating_the_Channel : public BT::SyncActionNode
 {
@@ -1584,10 +2843,19 @@ int main(int argc, char **argv)
     g_depth        = std::make_shared<DepthState>();
     g_localization = std::make_shared<LocalizationState>();
 
-    // ── Blackboard (still used for preferred_side port wiring) ──
+    // ── Blackboard ──
     auto blackboard = BT::Blackboard::create();
-    blackboard->set("detections",     std::string("No detections"));
-    blackboard->set("preferred_side", std::string(""));
+    blackboard->set("detections",      std::string("No detections"));
+    blackboard->set("preferred_side",  std::string(""));
+    // 2026 blackboard entries
+    blackboard->set("role",            std::string("survey_repair"));
+    blackboard->set("gate_side",       std::string("R"));
+    blackboard->set("coin_flip_heading", std::string("none"));
+    blackboard->set("coin_flip_role",  std::string("survey"));
+    blackboard->set("inside_octagon",  std::string("false"));
+    blackboard->set("marker_dropped",  std::string("false"));
+    blackboard->set("torpedo_fired",   std::string("false"));
+    blackboard->set("objects_placed",  0);
 
     BT::BehaviorTreeFactory factory;
 
@@ -1658,27 +2926,133 @@ int main(int argc, char **argv)
     factory.registerNodeType<Move_back_facing_initial_direction>(
         "Move_back_facing_initial_direction");
 
-    // ── Return Home ──
+    // ── Return Home (legacy) ──
     factory.registerNodeType<Move_to_depth_taken_for_Navigating_the_Channel>(
         "Move_to_depth_taken_for_Navigating_the_Channel");
     factory.registerNodeType<Turn_right_180_deg>("Turn_right_180_deg");
     factory.registerNodeType<Make_it_back_through_gate>(
         "Make_it_back_through_gate");
 
+    // ══════════════════════════════════════════════════════════════════
+    //  2026 "Restore and Recovery" node registrations
+    // ══════════════════════════════════════════════════════════════════
+
+    // ── Safety / Condition nodes ──
+    BT::PortsList octagon_ports = {BT::InputPort<string>("val")};
+    factory.registerSimpleCondition(
+        "IsInsideOctagon", IsInsideOctagon_check, octagon_ports);
+
+    BT::PortsList batt_ports = {BT::InputPort<float>("min_pct"),
+                                 BT::InputPort<float>("battery_pct")};
+    factory.registerSimpleCondition("IsBatteryOk", IsBatteryOk_check, batt_ports);
+
+    BT::PortsList leak_ports = {BT::InputPort<string>("leak")};
+    factory.registerSimpleCondition("IsLeakDetected", IsLeakDetected_check, leak_ports);
+
+    BT::PortsList depth_ports = {BT::InputPort<float>("max_depth"),
+                                  BT::InputPort<float>("min_depth"),
+                                  BT::InputPort<float>("depth")};
+    factory.registerSimpleCondition("IsDepthSafe", IsDepthSafe_check, depth_ports);
+
+    BT::PortsList time_ports = {BT::InputPort<float>("min_sec"),
+                                 BT::InputPort<string>("start_time")};
+    factory.registerSimpleCondition("IsTimeRemaining", IsTimeRemaining_check, time_ports);
+
+    // ── Fundamental movement / navigation ──
+    factory.registerNodeType<AscendTo>("AscendTo");
+    factory.registerNodeType<TurnAction>("Turn");
+    factory.registerNodeType<WaitAction>("Wait");
+    factory.registerNodeType<StabilizeAction>("Stabilize");
+    factory.registerNodeType<EmergencySurfaceAction>("EmergencySurface");
+    factory.registerNodeType<NavigateToAction>("Navigate_to");
+    factory.registerNodeType<NavigateToBearingAction>("Navigate_to_bearing");
+    factory.registerNodeType<NavigateOnHeadingAction>("Navigate_on_heading");
+    factory.registerNodeType<HoldDepthAction>("Hold_depth");
+    factory.registerNodeType<MoveThruGateAction>("Move_through_gate");
+    factory.registerNodeType<RepositionToGateSideAction>("Reposition_to_gate_side");
+    factory.registerNodeType<RecordHeadingAction>("Record_heading");
+    factory.registerNodeType<RecalibrateNavAction>("Recalibrate_nav");
+    factory.registerNodeType<ComputeReverseHeadingAction>("Compute_reverse_heading");
+    factory.registerNodeType<StyleThruGateAction>("Style_through_gate");
+    factory.registerNodeType<DetectGateAction>("Detect_gate");
+    factory.registerNodeType<AlignToAction>("Align_to");
+    factory.registerNodeType<AlignAboveAction>("Align_above");
+    factory.registerNodeType<DetectPingerAction>("Detect_pinger");
+    factory.registerNodeType<FollowPathAction>("Follow_path");
+
+    // ── Gate / Role ──
+    factory.registerNodeType<DetectRoleIcons>("Detect_role_icons");
+
+    // ── Slalom ──
+    factory.registerNodeType<DetectSlalomPipes>("Detect_slalom_pipes");
+    factory.registerNodeType<ComputeSlalomPath>("Compute_slalom_path");
+    factory.registerNodeType<DetectPathMarker>("Detect_path_marker");
+
+    // ── Bins / Recon ──
+    factory.registerNodeType<DetectBins>("Detect_bins");
+    factory.registerNodeType<DetectMagneticDetector>("Detect_magnetic_detector");
+    factory.registerNodeType<ApproachAndInteract>("Approach_and_interact");
+
+    // ── Torpedoes / Deploy ──
+    factory.registerNodeType<DetectTorpedoBoard>("Detect_torpedo_board");
+    factory.registerNodeType<AlignToOpening>("Align_to_opening");
+    factory.registerNodeType<FireTorpedo>("Fire_torpedo");
+    factory.registerNodeType<SetFiringDistance>("Set_firing_distance");
+
+    // ── Octagon / Resupply ──
+    factory.registerNodeType<DetectOctagonBelow>("Detect_octagon_below");
+    factory.registerNodeType<ConfirmOverhead>("Confirm_overhead");
+    factory.registerNodeType<SurfaceInOctagon>("Surface_in_octagon");
+    factory.registerNodeType<DetectHangingImage>("Detect_hanging_image");
+    factory.registerNodeType<DetermineFaceImage>("Determine_face_image");
+    factory.registerNodeType<DetectTableItem>("Detect_table_item");
+    factory.registerNodeType<DetermineBasket2026>("Determine_basket");
+    factory.registerNodeType<GrabObject>("Grab_object");
+    factory.registerNodeType<ReleaseObject>("Release_object");
+    factory.registerNodeType<AlignToBasket>("Align_to_basket");
+    factory.registerNodeType<CenterBeneath>("Center_beneath");
+    factory.registerNodeType<FaceDirection>("Face_direction");
+    factory.registerNodeType<RotationBonus>("Rotation_bonus");
+    factory.registerNodeType<IncrementCounter>("Increment");
+
     // ── Load BT XML files ──
     const auto mission_share_dir =
         ament_index_cpp::get_package_share_directory("mission");
     const auto bt_xml_dir = mission_share_dir + "/bt_xml/";
 
-    const std::vector<std::string> tree_files = {
-        "main.xml",          "heading_out.xml",    "collecting_data.xml",
-        "folllow_path.xml",  "navigate_channel.xml",
-        "drop_bruvs.xml",   "tagging.xml",
-        "ocean_cleanup.xml", "return_home.xml"};
+    // Check for 2026 consolidated XML first
+    const std::string mission_2026_xml =
+        bt_xml_dir + "../../../robosub2026/share/robosub2026/bt_xml/robosub2026_mission.xml";
+    const std::string local_2026_xml =
+        std::string(getenv("HOME") ? getenv("HOME") : ".") +
+        "/UPDATEDCODE/src/robosub2026/bt_xml/robosub2026_mission.xml";
 
-    for (const auto &tf : tree_files)
+    bool loaded_2026 = false;
+    for (const auto &path : {mission_2026_xml, local_2026_xml})
     {
-        factory.registerBehaviorTreeFromFile(bt_xml_dir + tf);
+        std::ifstream test(path);
+        if (test.good())
+        {
+            cout << "Loading 2026 mission XML: " << path << endl;
+            factory.registerBehaviorTreeFromFile(path);
+            loaded_2026 = true;
+            break;
+        }
+    }
+
+    if (!loaded_2026)
+    {
+        cout << "2026 XML not found, loading legacy tree files" << endl;
+        const std::vector<std::string> tree_files = {
+            "main.xml",          "heading_out.xml",    "collecting_data.xml",
+            "folllow_path.xml",  "navigate_channel.xml",
+            "drop_bruvs.xml",   "tagging.xml",
+            "ocean_cleanup.xml", "return_home.xml"};
+
+        for (const auto &tf : tree_files)
+        {
+            factory.registerBehaviorTreeFromFile(bt_xml_dir + tf);
+        }
     }
 
     // ── Spin ROS nodes in background ──
@@ -1706,9 +3080,11 @@ int main(int argc, char **argv)
     cout << "  Approach stop distance (depth) : " << g_depth->stop_distance_m() << " m" << endl;
 
     // ── Run the tree with mission timeout ──
-    auto main_tree = factory.createTree(
-        "SHRUB (Software for Handling and Regulating Underwater Behavior)",
-        blackboard);
+    std::string tree_id = loaded_2026
+        ? "SHRUB"
+        : "SHRUB (Software for Handling and Regulating Underwater Behavior)";
+    cout << "  Running tree: " << tree_id << endl;
+    auto main_tree = factory.createTree(tree_id, blackboard);
 
     constexpr double MISSION_TIMEOUT_S = 870.0;  // 14.5 min — leave 30s buffer
     auto mission_start = SteadyClock::now();

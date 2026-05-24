@@ -1,0 +1,25 @@
+ROBOSUB 2026 - SECTION 3.1: MANDATORY ACTIVITIES
+=================================================
+
+Before entering Autonomy Challenge, teams must demonstrate:
+- Vehicle requirements (section 5.3)
+- Safe control ability via: static safety inspection + weight measurement
+
+3.1.1 STATIC SAFETY INSPECTION
+- All systems must pass safety inspection before water operation (section 5.2)
+- Course Director may DQ unsafe vehicles
+
+3.1.2 WEIGHT MEASUREMENT
+- Vehicles weighed before each semi-finals and finals run
+- Teams transport vehicle on cart to scale
+
+WEIGHT TABLE:
+- > 60 kg (132 lbs): DISQUALIFIED
+- 60 kg >= weight > 38 kg (132 >= weight > 84 lbs): PENALTY = -(250 + 11*(Weight_kg - 60))
+- 38 kg >= weight > 22 kg (84 >= weight > 48.5 lbs): BONUS = 4.4*(38 - Weight_kg)
+- <= 22 kg (<= 48.5 lbs): BONUS = 80 + 2.2*(22 - Weight_kg)
+
+Examples:
+- 50kg: -(250+11(50-60)) = -140 penalty
+- 25kg: 4.4(38-25) = 57 bonus
+- 45kg + 18kg (two vehicles): -85 + 89 = 4 points
