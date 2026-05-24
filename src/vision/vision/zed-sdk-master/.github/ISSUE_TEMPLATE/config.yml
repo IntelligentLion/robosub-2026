@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Online Documentation
+    url: https://docs.stereolabs.com/
+    about: Check out the Stereolabs documentation for answers to common questions.
+  - name: Stereolabs Community
+    url: https://community.stereolabs.com/
+    about: Ask questions, request features & discuss with other users and developers.

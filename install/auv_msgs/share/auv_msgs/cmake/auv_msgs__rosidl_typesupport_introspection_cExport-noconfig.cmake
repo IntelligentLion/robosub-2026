@@ -12,8 +12,8 @@ set_target_properties(auv_msgs::auv_msgs__rosidl_typesupport_introspection_c PRO
   IMPORTED_SONAME_NOCONFIG "libauv_msgs__rosidl_typesupport_introspection_c.so"
   )
 
-list(APPEND _cmake_import_check_targets auv_msgs::auv_msgs__rosidl_typesupport_introspection_c )
-list(APPEND _cmake_import_check_files_for_auv_msgs::auv_msgs__rosidl_typesupport_introspection_c "${_IMPORT_PREFIX}/lib/libauv_msgs__rosidl_typesupport_introspection_c.so" )
+list(APPEND _IMPORT_CHECK_TARGETS auv_msgs::auv_msgs__rosidl_typesupport_introspection_c )
+list(APPEND _IMPORT_CHECK_FILES_FOR_auv_msgs::auv_msgs__rosidl_typesupport_introspection_c "${_IMPORT_PREFIX}/lib/libauv_msgs__rosidl_typesupport_introspection_c.so" )
 
 # Commands beyond this point should not need to know the version.
 set(CMAKE_IMPORT_FILE_VERSION)

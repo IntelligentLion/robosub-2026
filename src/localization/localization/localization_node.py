@@ -20,6 +20,14 @@ from nav_msgs.msg import Odometry
 from auv_msgs.msg import DepthInfo
 
 
+def _is_finite(v):
+    return math.isfinite(v)
+
+
+MAX_POSITION_M = 50.0
+MAX_OFFSET_M = 10.0
+
+
 def _quat_to_yaw(q):
     siny = 2.0 * (q.w * q.z + q.x * q.y)
     cosy = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
@@ -86,46 +94,70 @@ class LocalizationNode(Node):
             f'correction_alpha={self._alpha}')
 
     def _odom_cb(self, msg: Odometry):
-        p = msg.pose.pose.position
-        q = msg.pose.pose.orientation
+        try:
+            p = msg.pose.pose.position
+            q = msg.pose.pose.orientation
 
-        self._vio_x = p.x
-        self._vio_y = p.y
-        self._vio_z = p.z
-        self._vio_yaw = _quat_to_yaw(q)
-        self._vio_quat = q
-        self._vio_received = True
+            if not all(_is_finite(v) for v in (p.x, p.y, p.z, q.w, q.x, q.y, q.z)):
+                self.get_logger().warn('Non-finite VIO data — ignoring frame')
+                return
 
-        self._x = self._vio_x + self._offset_x
-        self._y = self._vio_y + self._offset_y
-        self._z = self._vio_z + self._offset_z
-        self._yaw = self._vio_yaw + self._offset_yaw
+            self._vio_x = max(-MAX_POSITION_M, min(MAX_POSITION_M, p.x))
+            self._vio_y = max(-MAX_POSITION_M, min(MAX_POSITION_M, p.y))
+            self._vio_z = max(-MAX_POSITION_M, min(MAX_POSITION_M, p.z))
+            self._vio_yaw = _quat_to_yaw(q)
+            self._vio_quat = q
+            self._vio_received = True
+
+            self._x = self._vio_x + self._offset_x
+            self._y = self._vio_y + self._offset_y
+            self._z = self._vio_z + self._offset_z
+            self._yaw = self._vio_yaw + self._offset_yaw
+        except Exception as e:
+            self.get_logger().error(f'Odom callback error: {e}')
 
     def _correction_cb(self, msg: PoseStamped):
-        corrected_x = msg.pose.position.x
-        corrected_y = msg.pose.position.y
-        corrected_z = msg.pose.position.z
-        corrected_yaw = _quat_to_yaw(msg.pose.orientation)
+        try:
+            corrected_x = msg.pose.position.x
+            corrected_y = msg.pose.position.y
+            corrected_z = msg.pose.position.z
 
-        target_offset_x = corrected_x - self._vio_x
-        target_offset_y = corrected_y - self._vio_y
-        target_offset_z = corrected_z - self._vio_z
-        target_offset_yaw = corrected_yaw - self._vio_yaw
+            if not all(_is_finite(v) for v in (corrected_x, corrected_y, corrected_z)):
+                self.get_logger().warn('Non-finite correction — ignoring')
+                return
 
-        # Smooth blending to avoid jumps
-        a = self._alpha
-        self._offset_x += a * (target_offset_x - self._offset_x)
-        self._offset_y += a * (target_offset_y - self._offset_y)
-        self._offset_z += a * (target_offset_z - self._offset_z)
-        self._offset_yaw += a * (target_offset_yaw - self._offset_yaw)
+            corrected_yaw = _quat_to_yaw(msg.pose.orientation)
 
-        self.get_logger().info(
-            f'Correction applied — offset: '
-            f'dx={self._offset_x:.3f} dy={self._offset_y:.3f} '
-            f'dz={self._offset_z:.3f} dyaw={math.degrees(self._offset_yaw):.1f}°')
+            target_offset_x = corrected_x - self._vio_x
+            target_offset_y = corrected_y - self._vio_y
+            target_offset_z = corrected_z - self._vio_z
+            target_offset_yaw = corrected_yaw - self._vio_yaw
+
+            if any(abs(v) > MAX_OFFSET_M for v in (target_offset_x, target_offset_y, target_offset_z)):
+                self.get_logger().warn(
+                    f'Correction offset too large — rejecting '
+                    f'(dx={target_offset_x:.2f} dy={target_offset_y:.2f} dz={target_offset_z:.2f})')
+                return
+
+            a = self._alpha
+            self._offset_x += a * (target_offset_x - self._offset_x)
+            self._offset_y += a * (target_offset_y - self._offset_y)
+            self._offset_z += a * (target_offset_z - self._offset_z)
+            self._offset_yaw += a * (target_offset_yaw - self._offset_yaw)
+
+            self.get_logger().info(
+                f'Correction applied — offset: '
+                f'dx={self._offset_x:.3f} dy={self._offset_y:.3f} '
+                f'dz={self._offset_z:.3f} dyaw={math.degrees(self._offset_yaw):.1f}°')
+        except Exception as e:
+            self.get_logger().error(f'Correction callback error: {e}')
 
     def _depth_cb(self, msg: DepthInfo):
-        self._depth_m = msg.sub_depth_m
+        try:
+            if _is_finite(msg.sub_depth_m):
+                self._depth_m = msg.sub_depth_m
+        except Exception as e:
+            self.get_logger().error(f'Depth callback error: {e}')
 
     def _publish(self):
         if not self._vio_received:
@@ -151,12 +183,22 @@ class LocalizationNode(Node):
 
 def main():
     rclpy.init()
-    node = LocalizationNode()
+    node = None
     try:
+        node = LocalizationNode()
         rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    except Exception as e:
+        if node:
+            node.get_logger().fatal(f'Unhandled exception: {e}')
+        else:
+            print(f'[localization_node] Fatal startup error: {e}')
     finally:
-        node.destroy_node()
-        rclpy.shutdown()
+        if node:
+            node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':

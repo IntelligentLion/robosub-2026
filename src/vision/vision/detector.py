@@ -10,6 +10,7 @@ import pyzed.sl as sl
 
 from threading import Event, Lock, Thread
 from time import sleep
+import threading
 
 from vision.cv_viewer import tracking_viewer as cv_viewer
 
@@ -39,9 +40,18 @@ class OnnxDetector:
         so.log_severity_level = 3
         so.intra_op_num_threads = 2
         so.inter_op_num_threads = 1
+        providers = []
+        if 'CUDAExecutionProvider' in ort.get_available_providers():
+            providers.append(('CUDAExecutionProvider', {
+                'device_id': 0,
+                'arena_extend_strategy': 'kSameAsRequested',
+                'gpu_mem_limit': 512 * 1024 * 1024,
+            }))
+            print('[OnnxDetector] CUDA EP available — using GPU acceleration')
+        providers.append('CPUExecutionProvider')
         self.session = ort.InferenceSession(
             onnx_path, sess_options=so,
-            providers=['CPUExecutionProvider'],
+            providers=providers,
         )
 
         inp = self.session.get_inputs()[0]
@@ -156,8 +166,7 @@ class TensorRTDetector:
                         print(parser.get_error(i))
                     raise RuntimeError('TRT: failed to parse ONNX model')
             config = builder.create_builder_config()
-            # 256MB workspace — enough for a 416-input YOLO, safe on 7.4GB shared Jetson
-            config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 1 << 28)
+            config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 1 << 26)
             if builder.platform_has_fast_fp16:
                 config.set_flag(trt.BuilderFlag.FP16)
                 print('[TensorRTDetector] FP16 enabled')
@@ -267,6 +276,9 @@ def _parse_yolo(raw: np.ndarray, conf_thres: float):
     return boxes_xywh[mask], class_ids[mask], confidences[mask]
 
 
+_NMS_MAX_DETECTIONS = 500
+
+
 def _nms(boxes_xywh: np.ndarray, scores: np.ndarray, iou_thres: float):
     if len(boxes_xywh) == 0:
         return []
@@ -275,8 +287,12 @@ def _nms(boxes_xywh: np.ndarray, scores: np.ndarray, iou_thres: float):
     y1 = cy - h * 0.5; y2 = cy + h * 0.5
     areas = np.maximum(w * h, 0)
     order = scores.argsort()[::-1]
+    if len(order) > _NMS_MAX_DETECTIONS:
+        order = order[:_NMS_MAX_DETECTIONS]
     keep = []
-    while len(order):
+    for _ in range(len(order)):
+        if len(order) == 0:
+            break
         i = order[0]
         keep.append(i)
         if len(order) == 1:
@@ -290,6 +306,80 @@ def _nms(boxes_xywh: np.ndarray, scores: np.ndarray, iou_thres: float):
         iou = inter / (areas[i] + areas[rest] - inter + 1e-6)
         order = rest[iou <= iou_thres]
     return keep
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Shared model cache (avoids loading the model twice when both cameras run)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class _ThreadSafeModel:
+    """Wraps a detector so concurrent predict() calls are serialized."""
+    def __init__(self, model):
+        self._model = model
+        self._lock = threading.Lock()
+
+    @property
+    def names(self):
+        return self._model.names
+
+    def predict(self, *args, **kwargs):
+        with self._lock:
+            return self._model.predict(*args, **kwargs)
+
+
+_shared_model = None
+_shared_model_lock = threading.Lock()
+
+
+def _available_memory_mb():
+    try:
+        with open('/proc/meminfo') as f:
+            for line in f:
+                if line.startswith('MemAvailable:'):
+                    return int(line.split()[1]) // 1024
+    except Exception:
+        pass
+    return 0
+
+
+_MIN_MB_FOR_TRT_BUILD = 2048
+
+
+def get_shared_model(onnx_path: str, class_names=None):
+    """Return a process-wide singleton detector, creating it on first call."""
+    global _shared_model
+    with _shared_model_lock:
+        if _shared_model is not None:
+            print('[get_shared_model] Reusing existing model instance')
+            return _shared_model
+
+        model = None
+        engine_path = onnx_path.replace('.onnx', '.engine')
+        has_engine = os.path.exists(engine_path)
+        avail_mb = _available_memory_mb()
+
+        try:
+            import tensorrt, torch
+            if has_engine:
+                model = TensorRTDetector(onnx_path, class_names=class_names)
+                print('[get_shared_model] Backend: TensorRT GPU (loaded pre-built engine)')
+            elif avail_mb >= _MIN_MB_FOR_TRT_BUILD:
+                print(f'[get_shared_model] {avail_mb} MB available — building TensorRT engine')
+                model = TensorRTDetector(onnx_path, class_names=class_names)
+                print('[get_shared_model] Backend: TensorRT GPU (FP16)')
+            else:
+                print(f'[get_shared_model] Only {avail_mb} MB available (need {_MIN_MB_FOR_TRT_BUILD} MB) '
+                      f'— skipping TensorRT build, use build_engine.py offline')
+        except Exception as trt_err:
+            print(f'[get_shared_model] TensorRT failed ({trt_err}), trying ONNX')
+
+        if model is None:
+            model = OnnxDetector(onnx_path, class_names=class_names)
+            active = model.session.get_providers()[0]
+            print(f'[get_shared_model] Backend: ONNX ({active})')
+
+        _shared_model = _ThreadSafeModel(model)
+        return _shared_model
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -334,7 +424,7 @@ class VisionNode(Node):
 # ─────────────────────────────────────────────────────────────────────────────
 
 _PKG_DIR = os.path.dirname(os.path.abspath(__file__))
-_DEFAULT_ONNX = os.path.join(_PKG_DIR, 'zed_right_24_06_15.onnx')
+_DEFAULT_ONNX = os.path.join(_PKG_DIR, 'yolov8n.onnx')
 
 lock = Lock()
 frame_ready = Event()
@@ -407,37 +497,41 @@ def enrich_depths(info_dicts, zed_objects):
 #  Inference thread
 # ─────────────────────────────────────────────────────────────────────────────
 
-def inference_thread(weights, img_size, conf_thres=0.2, iou_thres=0.45, device='cuda', onnx_path=None):
+_MAX_INFERENCE_ERRORS = 50
+
+
+def inference_thread(weights, img_size, conf_thres=0.2, iou_thres=0.45, device='cuda', onnx_path=None, preloaded_model=None):
     global image_net, exit_signal, detections, detection_infos
     global model_names, inference_device
 
-    print('Initializing Network...')
+    consecutive_errors = 0
 
-    if onnx_path:
-        model = None
-        try:
-            import tensorrt, torch
-            model = TensorRTDetector(onnx_path)
-            print('[inference] Backend: TensorRT GPU (FP16)')
-        except Exception as trt_err:
-            print(f'[inference] TensorRT unavailable ({trt_err}), using ONNX/CPU')
-        if model is None:
-            model = OnnxDetector(onnx_path)
-            print('[inference] Backend: ONNX (CPU)')
-        model_names = model.names
-        use_onnx = True
-    else:
-        import torch
-        from ultralytics import YOLO
-        model = YOLO(weights)
-        model_names = model.names
-        use_onnx = False
+    try:
+        if preloaded_model is not None:
+            model = preloaded_model
+            model_names = model.names
+            use_onnx = True
+        elif onnx_path:
+            model = get_shared_model(onnx_path)
+            model_names = model.names
+            use_onnx = True
+        else:
+            import torch
+            from ultralytics import YOLO
+            model = YOLO(weights)
+            model_names = model.names
+            use_onnx = False
+    except Exception as e:
+        print(f'[inference_thread] FATAL: model load failed: {e}')
+        exit_signal = True
+        inference_done.set()
+        return
 
     print(f'Model classes: {model_names}')
     inference_device = device
 
     while not exit_signal:
-        if not frame_ready.wait(timeout=0.1):
+        if not frame_ready.wait(timeout=0.5):
             continue
         frame_ready.clear()
         if exit_signal:
@@ -472,6 +566,13 @@ def inference_thread(weights, img_size, conf_thres=0.2, iou_thres=0.45, device='
             with lock:
                 detections = zed_boxes
                 detection_infos = infos
+            consecutive_errors = 0
+        except Exception as e:
+            consecutive_errors += 1
+            print(f'[inference_thread] Error ({consecutive_errors}/{_MAX_INFERENCE_ERRORS}): {e}')
+            if consecutive_errors >= _MAX_INFERENCE_ERRORS:
+                print('[inference_thread] Too many errors — stopping inference')
+                exit_signal = True
         finally:
             inference_done.set()
 
@@ -501,6 +602,15 @@ def run_detector(node):
 
     model_label = (onnx_path or opt.weights).split('/')[-1]
 
+    # Load model BEFORE opening ZED camera — TensorRT engine build needs
+    # the full GPU memory pool, which ZED would otherwise consume.
+    print('Initializing Model (before camera to avoid GPU OOM)...')
+    if onnx_path:
+        preloaded = get_shared_model(onnx_path, class_names=class_names)
+    else:
+        preloaded = None
+    gc.collect()
+
     capture_thread = Thread(
         target=inference_thread,
         kwargs={
@@ -510,6 +620,7 @@ def run_detector(node):
             'iou_thres':  0.45,
             'device':     opt.device,
             'onnx_path':  onnx_path,
+            'preloaded_model': preloaded,
         },
         daemon=True,
     )
@@ -619,10 +730,20 @@ def run_detector(node):
         hud_line1 = f'MODEL: {model_label} conf>={opt.conf_thres:.2f}'
         hud_line3 = f'ZED: {camera_res.width}x{camera_res.height}@{camera_infos.camera_configuration.fps}'
 
+        consecutive_grab_failures = 0
+        _MAX_GRAB_FAILURES = 200
+
         while not exit_signal:
-            if zed.grab(runtime_params) != sl.ERROR_CODE.SUCCESS:
+            grab_status = zed.grab(runtime_params)
+            if grab_status != sl.ERROR_CODE.SUCCESS:
+                consecutive_grab_failures += 1
+                if consecutive_grab_failures >= _MAX_GRAB_FAILURES:
+                    print(f'[Vision] {_MAX_GRAB_FAILURES} consecutive grab failures — exiting')
+                    exit_signal = True
+                    break
                 sleep(0.005)
                 continue
+            consecutive_grab_failures = 0
 
             # Grab frame for inference
             with lock:

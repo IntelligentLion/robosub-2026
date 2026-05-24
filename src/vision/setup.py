@@ -4,6 +4,7 @@ setup(
     name='vision',
     version='0.0.0',
     packages=find_packages(include=['vision', 'vision.*']),
+    package_data={'vision': ['*.onnx', '*.engine']},
     data_files=[
         ('share/ament_index/resource_index/packages', ['resource/vision']),
         ('share/vision', ['package.xml']),

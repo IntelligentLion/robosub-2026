@@ -117,14 +117,19 @@ public:
         detections_.clear();
         for (const auto &d : msg->detections)
         {
+            if (!std::isfinite(d.confidence) ||
+                !std::isfinite(d.position.x) ||
+                !std::isfinite(d.position.y))
+                continue;
+
             Detection det;
             det.label       = d.label;
-            det.confidence  = d.confidence;
-            det.center_x    = d.position.x;
-            det.center_y    = d.position.y;
-            det.depth_m     = d.position.z;  // z = Euclidean distance in metres (−1 = unknown)
-            det.bbox_width  = d.bbox_width;
-            det.bbox_height = d.bbox_height;
+            det.confidence  = std::clamp(d.confidence, 0.0f, 1.0f);
+            det.center_x    = std::clamp(d.position.x, 0.0f, 1.0f);
+            det.center_y    = std::clamp(d.position.y, 0.0f, 1.0f);
+            det.depth_m     = std::isfinite(d.position.z) ? d.position.z : -1.0f;
+            det.bbox_width  = std::clamp(d.bbox_width,  0.0f, 1.0f);
+            det.bbox_height = std::clamp(d.bbox_height, 0.0f, 1.0f);
             detections_.push_back(det);
         }
         last_update_ = SteadyClock::now();
@@ -394,23 +399,26 @@ private:
 //  execute_movement – timed movement (fire-and-forget, blocks BT tick)
 // =====================================================================
 
+constexpr float MAX_MOVEMENT_DURATION_S = 30.0f;
+
 static void execute_movement(const std::string &command,
                              float speed, float duration_sec)
 {
-    // Pause the autonomous controller so it doesn't fight our
-    // direct thruster commands during timed movements.
+    if (!g_movement_pub) return;
+
+    speed = std::clamp(speed, 0.0f, 1.0f);
+    duration_sec = std::clamp(duration_sec, 0.0f, MAX_MOVEMENT_DURATION_S);
+
     if (g_nav_pub) g_nav_pub->idle();
 
-    if (g_movement_pub)
-        g_movement_pub->publish_command(command, speed, duration_sec);
+    g_movement_pub->publish_command(command, speed, duration_sec);
 
     if (duration_sec > 0.0f)
     {
         std::this_thread::sleep_for(
             std::chrono::milliseconds(
                 static_cast<int>(duration_sec * 1000)));
-        if (g_movement_pub) g_movement_pub->stop();
-        // After timed movement, engage station-keep to hold position
+        g_movement_pub->stop();
         if (g_nav_pub) g_nav_pub->station_keep();
     }
 }
@@ -537,8 +545,12 @@ static void publish_status(const std::string &action,
 //  Horizontal correction takes priority since it affects aiming more.
 static bool apply_centering(const Detection &det)
 {
-    float ex = det.center_x - 0.5f;   // + = object right of centre
-    float ey = det.center_y - 0.5f;   // + = object below centre
+    if (!g_movement_pub) return false;
+
+    float ex = det.center_x - 0.5f;
+    float ey = det.center_y - 0.5f;
+
+    if (!std::isfinite(ex) || !std::isfinite(ey)) return false;
 
     bool h_ok = std::abs(ex) <= CENTER_TOL;
     bool v_ok = std::abs(ey) <= CENTER_TOL;
@@ -548,7 +560,6 @@ static bool apply_centering(const Detection &det)
         return true;
     }
 
-    // Prioritise horizontal correction
     if (!h_ok)
     {
         float speed = std::clamp(std::abs(ex) * 2.0f, 0.10f, 0.45f);
@@ -1694,14 +1705,38 @@ int main(int argc, char **argv)
     cout << "  Approach target bbox width     : " << APPROACH_W        << endl;
     cout << "  Approach stop distance (depth) : " << g_depth->stop_distance_m() << " m" << endl;
 
-    // ── Run the tree ──
+    // ── Run the tree with mission timeout ──
     auto main_tree = factory.createTree(
         "SHRUB (Software for Handling and Regulating Underwater Behavior)",
         blackboard);
 
-    main_tree.tickRootWhileRunning();
+    constexpr double MISSION_TIMEOUT_S = 870.0;  // 14.5 min — leave 30s buffer
+    auto mission_start = SteadyClock::now();
 
-    publish_status("MissionTree", "SUCCESS", "Behaviour tree completed");
+    try {
+        auto tick_status = BT::NodeStatus::RUNNING;
+        while (rclcpp::ok() && tick_status == BT::NodeStatus::RUNNING)
+        {
+            if (elapsed_s(mission_start) >= MISSION_TIMEOUT_S)
+            {
+                cout << "=== MISSION TIMEOUT — halting tree ===" << endl;
+                if (g_movement_pub) g_movement_pub->stop();
+                if (g_nav_pub) g_nav_pub->idle();
+                publish_status("MissionTree", "TIMEOUT", "Mission time limit reached");
+                break;
+            }
+            tick_status = main_tree.tickRoot();
+            std::this_thread::sleep_for(50ms);
+        }
+    } catch (const std::exception& e) {
+        cerr << "=== MISSION EXCEPTION: " << e.what() << " ===" << endl;
+        if (g_movement_pub) g_movement_pub->stop();
+        if (g_nav_pub) g_nav_pub->idle();
+        publish_status("MissionTree", "FAILURE", std::string("Exception: ") + e.what());
+    }
+
+    if (g_movement_pub) g_movement_pub->stop();
+    publish_status("MissionTree", "COMPLETE", "Behaviour tree finished");
     cout << "=== SHRUB – Mission complete ===" << endl;
 
     // Cleanup

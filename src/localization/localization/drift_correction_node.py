@@ -100,16 +100,30 @@ class DriftCorrectionNode(Node):
                 'Set marker_map param like "path_a:0,0;path_b:3,0"')
 
     def _pose_cb(self, msg: PoseStamped):
-        self._current_x = msg.pose.position.x
-        self._current_y = msg.pose.position.y
-        self._current_z = msg.pose.position.z
-        q = msg.pose.orientation
-        siny = 2.0 * (q.w * q.z + q.x * q.y)
-        cosy = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
-        self._current_yaw = math.atan2(siny, cosy)
-        self._pose_received = True
+        try:
+            x = msg.pose.position.x
+            y = msg.pose.position.y
+            z = msg.pose.position.z
+            q = msg.pose.orientation
+            if not all(math.isfinite(v) for v in (x, y, z, q.w, q.x, q.y, q.z)):
+                return
+            self._current_x = x
+            self._current_y = y
+            self._current_z = z
+            siny = 2.0 * (q.w * q.z + q.x * q.y)
+            cosy = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+            self._current_yaw = math.atan2(siny, cosy)
+            self._pose_received = True
+        except Exception as e:
+            self.get_logger().error(f'Pose callback error: {e}')
 
     def _markers_cb(self, msg: ObjectDetectionArray):
+        try:
+            self._markers_cb_inner(msg)
+        except Exception as e:
+            self.get_logger().error(f'Markers callback error: {e}')
+
+    def _markers_cb_inner(self, msg: ObjectDetectionArray):
         if not self._pose_received or not self._marker_map:
             return
 
@@ -197,12 +211,22 @@ class DriftCorrectionNode(Node):
 
 def main():
     rclpy.init()
-    node = DriftCorrectionNode()
+    node = None
     try:
+        node = DriftCorrectionNode()
         rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    except Exception as e:
+        if node:
+            node.get_logger().fatal(f'Unhandled exception: {e}')
+        else:
+            print(f'[drift_correction_node] Fatal error: {e}')
     finally:
-        node.destroy_node()
-        rclpy.shutdown()
+        if node:
+            node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':

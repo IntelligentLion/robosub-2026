@@ -27,13 +27,13 @@ from std_msgs.msg import Float32, Header
 from nav_msgs.msg import Odometry
 from auv_msgs.msg import ObjectDetection, ObjectDetectionArray
 
-from vision.detector import OnnxDetector, TensorRTDetector
+from vision.detector import OnnxDetector, TensorRTDetector, get_shared_model
 from vision.detector import _parse_yolo, _nms, _OnnxResult, _OnnxBox, _EmptyResult
 from vision.detector import xywh2abcd, detections_to_custom_box
 
 
 _PKG_DIR = os.path.dirname(os.path.abspath(__file__))
-_DEFAULT_ONNX = os.path.join(_PKG_DIR, 'zed_right_24_06_15.onnx')
+_DEFAULT_ONNX = os.path.join(_PKG_DIR, 'yolov8n.onnx')
 
 
 lock = Lock()
@@ -101,34 +101,39 @@ class BottomCameraNode(Node):
         self.depth_pub.publish(msg)
 
 
-def _inference_thread(weights, img_size, conf_thres, iou_thres, device, onnx_path):
+_MAX_INFERENCE_ERRORS = 50
+
+
+def _inference_thread(weights, img_size, conf_thres, iou_thres, device, onnx_path, preloaded_model=None):
     global exit_signal, detections, detection_infos, model_names
 
+    consecutive_errors = 0
     print('[BottomCam] Initializing inference...')
 
-    model = None
-    if onnx_path:
-        try:
-            import tensorrt, torch
-            model = TensorRTDetector(onnx_path)
-            print('[BottomCam] Backend: TensorRT GPU (FP16)')
-        except Exception as e:
-            print(f'[BottomCam] TensorRT unavailable ({e}), using ONNX/CPU')
-        if model is None:
-            model = OnnxDetector(onnx_path)
-            print('[BottomCam] Backend: ONNX (CPU)')
-        model_names = model.names
-        use_onnx = True
-    else:
-        from ultralytics import YOLO
-        model = YOLO(weights)
-        model_names = model.names
-        use_onnx = False
+    try:
+        if preloaded_model is not None:
+            model = preloaded_model
+            model_names = model.names
+            use_onnx = True
+        elif onnx_path:
+            model = get_shared_model(onnx_path)
+            model_names = model.names
+            use_onnx = True
+        else:
+            from ultralytics import YOLO
+            model = YOLO(weights)
+            model_names = model.names
+            use_onnx = False
+    except Exception as e:
+        print(f'[BottomCam] FATAL: model load failed: {e}')
+        exit_signal = True
+        inference_done.set()
+        return
 
     print(f'[BottomCam] Classes: {model_names}')
 
     while not exit_signal:
-        if not frame_ready.wait(timeout=0.1):
+        if not frame_ready.wait(timeout=0.5):
             continue
         frame_ready.clear()
         if exit_signal:
@@ -150,8 +155,13 @@ def _inference_thread(weights, img_size, conf_thres, iou_thres, device, onnx_pat
             with lock:
                 detections = zed_boxes
                 detection_infos = infos
+            consecutive_errors = 0
         except Exception as e:
-            print(f'[BottomCam] Inference error: {e}')
+            consecutive_errors += 1
+            print(f'[BottomCam] Inference error ({consecutive_errors}/{_MAX_INFERENCE_ERRORS}): {e}')
+            if consecutive_errors >= _MAX_INFERENCE_ERRORS:
+                print('[BottomCam] Too many errors — stopping inference')
+                exit_signal = True
         finally:
             inference_done.set()
 
@@ -170,6 +180,13 @@ def run_bottom_camera(node: BottomCameraNode):
     parser.add_argument('--zed_fps', type=int, default=30)
     opt, _ = parser.parse_known_args(sys.argv[1:])
 
+    print('[BottomCam] Initializing model (before camera to avoid GPU OOM)...')
+    if opt.onnx:
+        preloaded = get_shared_model(opt.onnx)
+    else:
+        preloaded = None
+    gc.collect()
+
     inf_thread = Thread(
         target=_inference_thread,
         kwargs={
@@ -179,6 +196,7 @@ def run_bottom_camera(node: BottomCameraNode):
             'iou_thres': 0.45,
             'device': opt.device,
             'onnx_path': opt.onnx,
+            'preloaded_model': preloaded,
         },
         daemon=True,
     )
@@ -267,10 +285,20 @@ def run_bottom_camera(node: BottomCameraNode):
 
         print('[BottomCam] Starting main loop...')
 
+        consecutive_grab_failures = 0
+        _MAX_GRAB_FAILURES = 200
+
         while not exit_signal:
-            if zed.grab(runtime_params) != sl.ERROR_CODE.SUCCESS:
+            grab_status = zed.grab(runtime_params)
+            if grab_status != sl.ERROR_CODE.SUCCESS:
+                consecutive_grab_failures += 1
+                if consecutive_grab_failures >= _MAX_GRAB_FAILURES:
+                    print(f'[BottomCam] {_MAX_GRAB_FAILURES} consecutive grab failures — exiting')
+                    exit_signal = True
+                    break
                 sleep(0.005)
                 continue
+            consecutive_grab_failures = 0
 
             # Grab frame for inference
             with lock:

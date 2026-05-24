@@ -1,0 +1,11 @@
+source;share/bt_mission/hook/cmake_prefix_path.ps1
+source;share/bt_mission/hook/cmake_prefix_path.dsv
+source;share/bt_mission/hook/cmake_prefix_path.sh
+source;share/bt_mission/hook/ld_library_path_lib.ps1
+source;share/bt_mission/hook/ld_library_path_lib.dsv
+source;share/bt_mission/hook/ld_library_path_lib.sh
+source;share/bt_mission/local_setup.bash
+source;share/bt_mission/local_setup.dsv
+source;share/bt_mission/local_setup.ps1
+source;share/bt_mission/local_setup.sh
+source;share/bt_mission/local_setup.zsh

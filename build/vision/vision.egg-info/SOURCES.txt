@@ -24,6 +24,10 @@ vision/movement.py
 vision/obj_det.py
 vision/object_detection_image_viewer.py
 vision/pymavrun.py
+vision/test.py
+vision/yolov8n.engine
+vision/yolov8n.onnx
+vision/zed_right_24_06_15.onnx
 vision/cv_viewer/__init__.py
 vision/cv_viewer/tracking_viewer.py
 vision/cv_viewer/utils.py

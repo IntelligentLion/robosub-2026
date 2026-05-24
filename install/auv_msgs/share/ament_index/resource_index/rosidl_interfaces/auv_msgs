@@ -1,10 +1,1 @@
-msg/BehaviorStatus.idl
-msg/BehaviorStatus.msg
-msg/DepthInfo.idl
-msg/DepthInfo.msg
-msg/MovementCommand.idl
-msg/MovementCommand.msg
-msg/ObjectDetection.idl
-msg/ObjectDetection.msg
-msg/ObjectDetectionArray.idl
-msg/ObjectDetectionArray.msg
+/home/robosub/UPDATEDCODE/build/auv_msgs/ament_cmake_index/share/ament_index/resource_index/rosidl_interfaces/auv_msgs

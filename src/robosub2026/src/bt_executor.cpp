@@ -81,12 +81,40 @@ int main(int argc, char** argv)
   auto tick_period = std::chrono::milliseconds(tick_rate_ms);
   BT::NodeStatus status = BT::NodeStatus::RUNNING;
 
+  constexpr double MISSION_TIMEOUT_S = 870.0;  // 14.5 min — stop before 15 min window ends
+  constexpr int MAX_TICKS = 100000;             // hard upper bound on tick count
+  int tick_count = 0;
+
   while (rclcpp::ok() && status == BT::NodeStatus::RUNNING) {
+    double elapsed = ros_node->now().seconds() - start_time;
+    if (elapsed >= MISSION_TIMEOUT_S) {
+      RCLCPP_WARN(ros_node->get_logger(),
+                  "MISSION TIMEOUT (%.0fs) — halting tree", elapsed);
+      tree.haltTree();
+      status = BT::NodeStatus::SUCCESS;
+      break;
+    }
+
+    if (++tick_count >= MAX_TICKS) {
+      RCLCPP_WARN(ros_node->get_logger(),
+                  "Max tick count (%d) reached — halting tree", MAX_TICKS);
+      tree.haltTree();
+      status = BT::NodeStatus::FAILURE;
+      break;
+    }
+
     // Spin ROS callbacks (sensor updates, action feedback)
     rclcpp::spin_some(ros_node);
 
     // Tick the tree
-    status = tree.tickOnce();
+    try {
+      status = tree.tickOnce();
+    } catch (const std::exception& e) {
+      RCLCPP_ERROR(ros_node->get_logger(), "BT tick exception: %s", e.what());
+      tree.haltTree();
+      status = BT::NodeStatus::FAILURE;
+      break;
+    }
 
     // Sleep to maintain tick rate
     std::this_thread::sleep_for(tick_period);

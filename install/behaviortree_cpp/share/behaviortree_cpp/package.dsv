@@ -1,0 +1,17 @@
+source;share/behaviortree_cpp/hook/cmake_prefix_path.ps1
+source;share/behaviortree_cpp/hook/cmake_prefix_path.dsv
+source;share/behaviortree_cpp/hook/cmake_prefix_path.sh
+source;share/behaviortree_cpp/hook/ld_library_path_lib.ps1
+source;share/behaviortree_cpp/hook/ld_library_path_lib.dsv
+source;share/behaviortree_cpp/hook/ld_library_path_lib.sh
+source;share/behaviortree_cpp/hook/path.ps1
+source;share/behaviortree_cpp/hook/path.dsv
+source;share/behaviortree_cpp/hook/path.sh
+source;share/behaviortree_cpp/hook/pythonscriptspath.ps1
+source;share/behaviortree_cpp/hook/pythonscriptspath.dsv
+source;share/behaviortree_cpp/hook/pythonscriptspath.sh
+source;share/behaviortree_cpp/local_setup.bash
+source;share/behaviortree_cpp/local_setup.dsv
+source;share/behaviortree_cpp/local_setup.ps1
+source;share/behaviortree_cpp/local_setup.sh
+source;share/behaviortree_cpp/local_setup.zsh

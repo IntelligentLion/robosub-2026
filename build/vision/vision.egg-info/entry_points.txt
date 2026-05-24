@@ -2,3 +2,4 @@
 behavior_status_listener = vision.movement:main
 bottom_camera = vision.bottom_camera_node:main
 detector = vision.detector:main
+

@@ -1,1 +1,1 @@
-auv_msgs/ObjectDetection[] detections
+/home/robosub/UPDATEDCODE/src/auv_msgs/msg/ObjectDetectionArray.msg

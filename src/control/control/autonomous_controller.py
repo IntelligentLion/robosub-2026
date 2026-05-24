@@ -32,12 +32,18 @@ from auv_msgs.msg import (
 
 
 def _angle_diff(a, b):
-    d = a - b
-    while d > math.pi:
-        d -= 2 * math.pi
-    while d < -math.pi:
-        d += 2 * math.pi
+    d = math.atan2(math.sin(a - b), math.cos(a - b))
     return d
+
+
+def _is_finite(v):
+    return math.isfinite(v)
+
+
+MAX_DEPTH_M = 4.5
+MIN_DEPTH_M = 0.0
+MAX_POSITION_M = 50.0
+SEARCH_TIMEOUT_S = 60.0
 
 
 class PID:
@@ -57,7 +63,10 @@ class PID:
         self._initialized = False
 
     def update(self, error, dt):
-        if dt <= 0:
+        if dt <= 0 or dt > 1.0:
+            return 0.0
+        if not _is_finite(error):
+            self.reset()
             return 0.0
         if not self._initialized:
             self._prev_error = error
@@ -67,9 +76,13 @@ class PID:
         self._integral = max(-self.i_limit, min(self.i_limit, self._integral))
 
         derivative = (error - self._prev_error) / dt
+        derivative = max(-10.0, min(10.0, derivative))
         self._prev_error = error
 
         output = self.kp * error + self.ki * self._integral + self.kd * derivative
+        if not _is_finite(output):
+            self.reset()
+            return 0.0
         return max(-self.limit, min(self.limit, output))
 
 
@@ -115,6 +128,7 @@ class AutonomousController(Node):
 
         # Search state
         self._search_found = False
+        self._search_start_time = None
 
         # PIDs for position/heading control
         self._pid_x = PID(kp=0.8, ki=0.05, kd=0.2, limit=1.0)
@@ -149,56 +163,86 @@ class AutonomousController(Node):
     # ─── Callbacks ──────────────────────────────────────────────────
 
     def _nav_cmd_cb(self, msg: NavigationCommand):
-        new_mode = msg.mode.lower().strip()
-        old_mode = self._mode
+        try:
+            new_mode = msg.mode.lower().strip()
+            valid_modes = ('idle', 'station_keep', 'track_object',
+                           'search', 'waypoint', 'heading_hold')
+            if new_mode not in valid_modes:
+                self.get_logger().warn(f'Unknown mode "{new_mode}" — forcing idle')
+                new_mode = 'idle'
 
-        self._mode = new_mode
-        self._target_label = msg.target_label
-        self._target_x = msg.target_x
-        self._target_y = msg.target_y
-        self._target_z = msg.target_z
-        self._target_yaw = msg.target_yaw
-        self._max_speed = max(0.05, min(1.0, msg.speed)) if msg.speed > 0 else 0.5
-        self._approach_dist = msg.approach_dist if msg.approach_dist > 0 else self.DEFAULT_APPROACH_DIST
+            old_mode = self._mode
 
-        if new_mode == 'station_keep' and old_mode != 'station_keep':
-            self._anchor_x = self._pose_x
-            self._anchor_y = self._pose_y
-            self._anchor_z = self._pose_z
-            self._anchor_yaw = self._pose_yaw
-            self._reset_pids()
+            self._mode = new_mode
+            self._target_label = msg.target_label
+            self._target_x = max(-MAX_POSITION_M, min(MAX_POSITION_M, msg.target_x))
+            self._target_y = max(-MAX_POSITION_M, min(MAX_POSITION_M, msg.target_y))
+            self._target_z = max(MIN_DEPTH_M, min(MAX_DEPTH_M, msg.target_z))
+            self._target_yaw = msg.target_yaw
+            self._max_speed = max(0.05, min(1.0, msg.speed)) if msg.speed > 0 else 0.5
+            self._approach_dist = msg.approach_dist if msg.approach_dist > 0 else self.DEFAULT_APPROACH_DIST
 
-        if new_mode == 'waypoint' and old_mode != 'waypoint':
-            self._reset_pids()
+            if new_mode == 'station_keep' and old_mode != 'station_keep':
+                self._anchor_x = self._pose_x
+                self._anchor_y = self._pose_y
+                self._anchor_z = self._pose_z
+                self._anchor_yaw = self._pose_yaw
+                self._reset_pids()
 
-        if new_mode in ('search', 'track_object'):
-            self._search_found = False
-            self._pid_vis_x.reset()
-            self._pid_vis_y.reset()
+            if new_mode == 'waypoint' and old_mode != 'waypoint':
+                self._reset_pids()
 
-        if new_mode == 'idle':
+            if new_mode in ('search', 'track_object'):
+                self._search_found = False
+                self._search_start_time = self.get_clock().now()
+                self._pid_vis_x.reset()
+                self._pid_vis_y.reset()
+
+            if new_mode == 'idle':
+                self._send_stop()
+
+            self.get_logger().info(
+                f'Nav command: mode={new_mode} label={msg.target_label} '
+                f'speed={self._max_speed:.2f}')
+        except Exception as e:
+            self.get_logger().error(f'Nav callback error: {e}')
+            self._mode = 'idle'
             self._send_stop()
 
-        self.get_logger().info(
-            f'Nav command: mode={new_mode} label={msg.target_label} '
-            f'speed={self._max_speed:.2f}')
-
     def _vision_cb(self, msg: ObjectDetectionArray):
-        self._detections = msg.detections
-        self._det_stamp = self.get_clock().now()
+        try:
+            self._detections = msg.detections
+            self._det_stamp = self.get_clock().now()
+        except Exception as e:
+            self.get_logger().error(f'Vision callback error: {e}')
 
     def _pose_cb(self, msg: PoseStamped):
-        self._pose_x = msg.pose.position.x
-        self._pose_y = msg.pose.position.y
-        self._pose_z = msg.pose.position.z
-        q = msg.pose.orientation
-        self._pose_yaw = math.atan2(
-            2.0 * (q.w * q.z + q.x * q.y),
-            1.0 - 2.0 * (q.y * q.y + q.z * q.z))
-        self._pose_received = True
+        try:
+            x = msg.pose.position.x
+            y = msg.pose.position.y
+            z = msg.pose.position.z
+            q = msg.pose.orientation
+            if not all(_is_finite(v) for v in (x, y, z, q.w, q.x, q.y, q.z)):
+                self.get_logger().warn('Non-finite pose data — ignoring')
+                return
+            self._pose_x = max(-MAX_POSITION_M, min(MAX_POSITION_M, x))
+            self._pose_y = max(-MAX_POSITION_M, min(MAX_POSITION_M, y))
+            self._pose_z = max(-MAX_DEPTH_M, min(MAX_DEPTH_M, z))
+            self._pose_yaw = math.atan2(
+                2.0 * (q.w * q.z + q.x * q.y),
+                1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+            self._pose_received = True
+        except Exception as e:
+            self.get_logger().error(f'Pose callback error: {e}')
 
     def _depth_cb(self, msg: Float32):
-        self._depth_m = msg.data
+        try:
+            if _is_finite(msg.data):
+                self._depth_m = msg.data
+            else:
+                self.get_logger().warn('Non-finite depth — ignoring')
+        except Exception as e:
+            self.get_logger().error(f'Depth callback error: {e}')
 
     # ─── Helpers ────────────────────────────────────────────────────
 
@@ -232,25 +276,41 @@ class AutonomousController(Node):
     # ─── Main control loop ─────────────────────────────────────────
 
     def _control_tick(self):
-        now = self.get_clock().now()
-        dt = (now - self._last_tick).nanoseconds / 1e9
-        self._last_tick = now
+        try:
+            now = self.get_clock().now()
+            dt = (now - self._last_tick).nanoseconds / 1e9
+            self._last_tick = now
 
-        if dt <= 0 or dt > 1.0:
-            return
+            if dt <= 0 or dt > 1.0:
+                return
 
-        if self._mode == 'idle':
-            return
-        elif self._mode == 'station_keep':
-            self._tick_station_keep(dt)
-        elif self._mode == 'track_object':
-            self._tick_track_object(dt)
-        elif self._mode == 'search':
-            self._tick_search(dt)
-        elif self._mode == 'waypoint':
-            self._tick_waypoint(dt)
-        elif self._mode == 'heading_hold':
-            self._tick_heading_hold(dt)
+            if self._depth_m > MAX_DEPTH_M:
+                self.get_logger().error(
+                    f'DEPTH SAFETY: {self._depth_m:.2f}m > {MAX_DEPTH_M}m — surfacing')
+                self._mode = 'idle'
+                self._send_cmd('emerge', 0.6)
+                return
+
+            if self._mode == 'idle':
+                return
+            elif self._mode == 'station_keep':
+                self._tick_station_keep(dt)
+            elif self._mode == 'track_object':
+                self._tick_track_object(dt)
+            elif self._mode == 'search':
+                self._tick_search(dt)
+            elif self._mode == 'waypoint':
+                self._tick_waypoint(dt)
+            elif self._mode == 'heading_hold':
+                self._tick_heading_hold(dt)
+            else:
+                self.get_logger().warn(f'Unknown mode "{self._mode}" — stopping')
+                self._mode = 'idle'
+                self._send_stop()
+        except Exception as e:
+            self.get_logger().error(f'Control tick error: {e} — stopping')
+            self._send_stop()
+            self._mode = 'idle'
 
     # ─── Station keep ──────────────────────────────────────────────
 
@@ -342,6 +402,20 @@ class AutonomousController(Node):
     # ─── Search (rotate until found, then track) ───────────────────
 
     def _tick_search(self, dt):
+        if self._search_start_time is not None:
+            elapsed = (self.get_clock().now() - self._search_start_time).nanoseconds / 1e9
+            if elapsed > SEARCH_TIMEOUT_S:
+                self.get_logger().warn(
+                    f'Search timeout ({SEARCH_TIMEOUT_S}s) — switching to station_keep')
+                self._mode = 'station_keep'
+                self._anchor_x = self._pose_x
+                self._anchor_y = self._pose_y
+                self._anchor_z = self._pose_z
+                self._anchor_yaw = self._pose_yaw
+                self._reset_pids()
+                self._send_stop()
+                return
+
         det = self._best_detection(self._target_label, min_conf=0.65)
 
         if det is not None:
@@ -458,14 +532,26 @@ class AutonomousController(Node):
 
 def main():
     rclpy.init()
-    node = AutonomousController()
+    node = None
     try:
+        node = AutonomousController()
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
+    except Exception as e:
+        if node:
+            node.get_logger().fatal(f'Unhandled exception: {e}')
+        else:
+            print(f'[autonomous_controller] Fatal startup error: {e}')
     finally:
-        node.destroy_node()
-        rclpy.shutdown()
+        if node:
+            try:
+                node._send_stop()
+            except Exception:
+                pass
+            node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':

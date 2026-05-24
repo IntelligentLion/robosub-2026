@@ -66,19 +66,29 @@ class DepthNode(Node):
 
 def main():
     rclpy.init()
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        '--stop_distance', type=float, default=1.5,
-        help='Distance in metres at which to stop approaching an object (default: 1.5)',
-    )
-    args, _ = parser.parse_known_args(sys.argv[1:])
-
-    node = DepthNode(stop_distance_m=args.stop_distance)
+    node = None
     try:
+        parser = argparse.ArgumentParser()
+        parser.add_argument(
+            '--stop_distance', type=float, default=1.5,
+            help='Distance in metres at which to stop approaching an object (default: 1.5)',
+        )
+        args, _ = parser.parse_known_args(sys.argv[1:])
+
+        node = DepthNode(stop_distance_m=args.stop_distance)
         rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    except Exception as e:
+        if node:
+            node.get_logger().fatal(f'Unhandled exception: {e}')
+        else:
+            print(f'[depth_node] Fatal error: {e}')
     finally:
-        node.destroy_node()
-        rclpy.shutdown()
+        if node:
+            node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':

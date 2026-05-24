@@ -42,6 +42,7 @@ class ThrusterController(Node):
 
     # ── Safety constants ────────────────────────────────────────────────
     MAX_CONSECUTIVE_ERRORS = 5      # serial errors before reconnect attempt
+    MAX_RECONNECT_ATTEMPTS = 5      # give up after this many consecutive reconnects
     HEARTBEAT_INTERVAL_S = 1.0      # send heartbeat every 1 s
     ARMED_CHECK_INTERVAL_S = 5.0    # verify armed status every 5 s
     DEFAULT_WATCHDOG_S = 30.0       # stop if no command received for this long
@@ -65,6 +66,7 @@ class ThrusterController(Node):
         self.connected = False
         self._consecutive_errors = 0
         self._reconnecting = False
+        self._reconnect_attempts = 0
 
         if not HAS_MAVLINK:
             self.get_logger().warn(
@@ -203,8 +205,18 @@ class ThrusterController(Node):
         """Close existing link and attempt a fresh connection + arm."""
         if self._reconnecting:
             return
+        self._reconnect_attempts += 1
+        if self._reconnect_attempts > self.MAX_RECONNECT_ATTEMPTS:
+            self.get_logger().error(
+                f'Exceeded {self.MAX_RECONNECT_ATTEMPTS} reconnect attempts '
+                f'— falling back to simulation mode')
+            self.simulate = True
+            self.connected = False
+            return
         self._reconnecting = True
-        self.get_logger().warn('Attempting MAVLink reconnect …')
+        self.get_logger().warn(
+            f'Attempting MAVLink reconnect ({self._reconnect_attempts}/'
+            f'{self.MAX_RECONNECT_ATTEMPTS}) …')
         try:
             if self.master is not None:
                 try:
@@ -214,6 +226,8 @@ class ThrusterController(Node):
                 self.master = None
             self.connected = False
             self._connect_mavlink()
+            if self.connected:
+                self._reconnect_attempts = 0
         finally:
             self._reconnecting = False
 
@@ -238,9 +252,8 @@ class ThrusterController(Node):
         if self.simulate or not self.connected or self.master is None:
             return
         try:
-            # Drain incoming messages to get latest HEARTBEAT
             hb = None
-            while True:
+            for _ in range(100):
                 msg = self.master.recv_match(
                     type='HEARTBEAT', blocking=False)
                 if msg is None:
@@ -284,43 +297,58 @@ class ThrusterController(Node):
     # ─── ROS callback ──────────────────────────────────────────────────
 
     def _movement_cb(self, msg: MovementCommand):
-        cmd = msg.command.lower().strip()
-        speed = max(0.0, min(1.0, msg.speed))
-        duration = msg.duration
+        try:
+            cmd = msg.command.lower().strip()
+            speed = msg.speed
+            duration = msg.duration
 
-        self.get_logger().info(
-            f'Movement: {cmd}  speed={speed:.2f}  dur={duration:.1f}s')
+            if not (isinstance(speed, (int, float)) and
+                    isinstance(duration, (int, float))):
+                self.get_logger().warn('Invalid speed/duration types — ignoring')
+                return
 
-        # ── Dispatch to modular primitives ──
-        dispatch = {
-            'submerge':       lambda: self.submerge(speed),
-            'emerge':         lambda: self.emerge(speed),
-            'surge_forward':  lambda: self.surge(speed),
-            'surge_backward': lambda: self.surge(-speed),
-            'strafe_left':    lambda: self.strafe(-speed),
-            'strafe_right':   lambda: self.strafe(speed),
-            'rotate_cw':      lambda: self.rotate(speed),
-            'rotate_ccw':     lambda: self.rotate(-speed),
-            'stop':           self.stop,
-            'depth_hold':     self.depth_hold,
-        }
+            import math
+            if not math.isfinite(speed) or not math.isfinite(duration):
+                self.get_logger().warn('Non-finite speed/duration — ignoring')
+                return
 
-        handler = dispatch.get(cmd)
-        if handler is None:
-            self.get_logger().warn(f'Unknown command: "{cmd}"')
-            return
-        handler()
+            speed = max(0.0, min(1.0, speed))
+            duration = max(0.0, min(60.0, duration))
 
-        # Schedule automatic stop after duration
-        if duration > 0.0:
-            self._stop_time = (self.get_clock().now()
-                               + Duration(seconds=duration))
-        else:
-            self._stop_time = None
+            self.get_logger().info(
+                f'Movement: {cmd}  speed={speed:.2f}  dur={duration:.1f}s')
 
-        # Reset watchdog
-        self._last_cmd_time = self.get_clock().now()
-        self._watchdog_triggered = False
+            dispatch = {
+                'submerge':       lambda: self.submerge(speed),
+                'emerge':         lambda: self.emerge(speed),
+                'surge_forward':  lambda: self.surge(speed),
+                'surge_backward': lambda: self.surge(-speed),
+                'strafe_left':    lambda: self.strafe(-speed),
+                'strafe_right':   lambda: self.strafe(speed),
+                'rotate_cw':      lambda: self.rotate(speed),
+                'rotate_ccw':     lambda: self.rotate(-speed),
+                'stop':           self.stop,
+                'depth_hold':     self.depth_hold,
+            }
+
+            handler = dispatch.get(cmd)
+            if handler is None:
+                self.get_logger().warn(f'Unknown command: "{cmd}" — stopping')
+                self.stop()
+                return
+            handler()
+
+            if duration > 0.0:
+                self._stop_time = (self.get_clock().now()
+                                   + Duration(seconds=duration))
+            else:
+                self._stop_time = None
+
+            self._last_cmd_time = self.get_clock().now()
+            self._watchdog_triggered = False
+        except Exception as e:
+            self.get_logger().error(f'Movement callback error: {e} — stopping')
+            self.stop()
 
     # ─── Modular movement primitives ────────────────────────────────────
 
@@ -387,13 +415,18 @@ class ThrusterController(Node):
         if not self.connected or self.master is None:
             return
 
+        safe_x = max(-1000, min(1000, int(self.current_x)))
+        safe_y = max(-1000, min(1000, int(self.current_y)))
+        safe_z = max(0,     min(1000, int(self.current_z)))
+        safe_r = max(-1000, min(1000, int(self.current_r)))
+
         try:
             self.master.mav.manual_control_send(
                 self.master.target_system,
-                x=self.current_x,
-                y=self.current_y,
-                z=self.current_z,
-                r=self.current_r,
+                x=safe_x,
+                y=safe_y,
+                z=safe_z,
+                r=safe_r,
                 buttons=0)
             # Reset error counter on success
             self._consecutive_errors = 0

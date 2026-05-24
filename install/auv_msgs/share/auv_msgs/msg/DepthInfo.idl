@@ -1,17 +1,1 @@
-// generated from rosidl_adapter/resource/msg.idl.em
-// with input from auv_msgs/msg/DepthInfo.msg
-// generated code does not contain a copyright notice
-
-#include "builtin_interfaces/msg/Time.idl"
-
-module auv_msgs {
-  module msg {
-    struct DepthInfo {
-      builtin_interfaces::msg::Time stamp;
-
-      float sub_depth_m;
-
-      float stop_distance_m;
-    };
-  };
-};
+/home/robosub/UPDATEDCODE/build/auv_msgs/rosidl_adapter/auv_msgs/msg/DepthInfo.idl
