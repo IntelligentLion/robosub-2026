@@ -1,1 +1,0 @@
-- 2026-04-17: GitHub URL with `/tree/<commit>/depth%20sensing` cannot be cloned directly as a subtree; clone full repository then checkout commit and use target folder.

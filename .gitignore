@@ -1,15 +1,11 @@
 # Temporary files
 *.tmp
-*.log
 *.bak
 *~
+
+# OS files
 .DS_Store
-
-# Binary artifacts
-*.xlsx
-
-# Claude temporary files
-tmpclaude-*
+Thumbs.db
 
 # Editor directories and files
 .vscode/*
@@ -18,56 +14,68 @@ tmpclaude-*
 .idea/
 *.swp
 *.swo
-*~
 
-# OS files
-Thumbs.db
-.DS_Store
+# Colcon build artifacts (regenerated via colcon build)
+build/
+install/
+log/
+src/build/
+src/install/
+src/log/
 
-# Node modules (if any)
-node_modules/
-npm-debug.log*
+# CMake-generated files
+src/mission/src/Makefile
+src/mission/src/CMakeFiles/
+src/mission/src/cmake_install.cmake
+src/mission/src/CTestTestfile.cmake
 
-# Python virtual environment
+# Python virtual environments
 .venv/
 venv/
 env/
+ort_env/
 
-# Python cache (if any)
+# Python cache
 __pycache__/
 *.py[cod]
 *.pyo
 *.pyd
 .Python
 *.so
-
-# Build artifacts (if any)
-dist/
-build/
 *.egg-info/
+dist/
 
-# CMake-generated files (machine-specific, regenerated via cmake ..)
-src/mission/src/Makefile
-src/mission/src/CMakeFiles/
-src/mission/src/cmake_install.cmake
-src/mission/src/CTestTestfile.cmake
+# Python wheel binaries
+*.whl
+
+# Model weights
+*.pt
+*.onnx
+*.engine
+*.trt
+
+# Node
+node_modules/
+npm-debug.log*
+package-lock.json
 
 # Local configuration
 .env
 .env.local
 *.local
 
-# Cross-process file lock files (created by JsonFileLock / Lock-JsonFile)
+# Lock files
 *.lock
 
-# Agent output directories - tracked in Git (agent deliverables)
-# NOTE: These directories are intentional deliverables created by agent workflows.
-# They MUST NOT be gitignored or workflow jobs using 'git add' will fail.
-# See: PM -> docs/prd/, Architect -> docs/adr/ + docs/specs/,
-#      UX -> docs/ux/, DevOps -> docs/deployment/,
-#      Reviewer -> docs/reviews/
+# Claude
+.claude/
+memories/
+tmpclaude-*
 
 # Cache directories
 .cache/
 .pytest_cache/
 .mypy_cache/
+
+# Logs
+*.log

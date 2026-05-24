@@ -1,1 +1,0 @@
-/home/robosub/UPDATEDCODE/build/auv_msgs/rosidl_typesupport_introspection_cpp/auv_msgs/msg/detail/navigation_command__rosidl_typesupport_introspection_cpp.hpp

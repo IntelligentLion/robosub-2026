@@ -1,4 +1,0 @@
-- 2026-04-17: Completed clone of `stereolabs/zed-sdk` at commit `5102dd8a94ae91694e1d818cb8e3bed6bf884dc8`.
-- 2026-04-17: Built C++ depth sensing sample in `zed-sdk/depth sensing/depth sensing/cpp/build` successfully.
-- 2026-04-17: Ran runtime smoke test; sample opened physical ZED camera and initialized depth mode NEURAL.
-- Next steps: Run `./ZED_Depth_Sensing` without timeout for full visualization session.

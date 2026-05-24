@@ -1,2 +1,0 @@
-- 2026-04-17: Cloned `stereolabs/zed-sdk` into workspace at exact commit `5102dd8a94ae91694e1d818cb8e3bed6bf884dc8` for reproducible depth sensing sample setup.
-- 2026-04-17: Used C++ sample at `zed-sdk/depth sensing/depth sensing/cpp` as primary depth sensing setup path on Linux.
