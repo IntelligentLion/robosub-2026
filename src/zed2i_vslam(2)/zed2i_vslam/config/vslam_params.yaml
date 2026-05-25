@@ -1,0 +1,29 @@
+/**:
+  ros__parameters:
+
+    # ── Camera ──────────────────────────────────────────────────────────────
+    resolution: "VGA"            # VGA = lowest GPU footprint; bump to HD720 if you have VRAM headroom
+    fps: 30
+    depth_mode: "NEURAL"         # ULTRA is deprecated in SDK 4.x; NEURAL is the recommended replacement
+
+    # ── Tracking ─────────────────────────────────────────────────────────────
+    # Spatial mapping is GPU-intensive — keep disabled on Jetson unless needed
+    enable_spatial_map: false
+    coordinate_system: "RIGHT_HANDED_Z_UP_X_FWD"
+
+    # ── Point cloud ──────────────────────────────────────────────────────────
+    publish_point_cloud: true
+    point_cloud_downsample: 8    # Higher = fewer points = less CPU/GPU work (Jetson: 8-16)
+
+    # ── Publish rate throttling (relative to grab fps) ────────────────────────
+    image_every_n_frames: 3      # publish left image + depth every 3rd grab (~10 fps at 30 fps)
+    pc_every_n_frames: 6         # publish point cloud every 6th grab (~5 fps at 30 fps)
+
+    # ── IMU ──────────────────────────────────────────────────────────────────
+    imu_rate_hz: 200
+
+    # ── TF Frames ────────────────────────────────────────────────────────────
+    base_frame:   "base_link"
+    camera_frame: "camera_link"
+    odom_frame:   "odom"
+    map_frame:    "map"

@@ -148,8 +148,8 @@ public:
             Detection det;
             det.label       = d.label;
             det.confidence  = std::clamp(d.confidence, 0.0f, 1.0f);
-            det.center_x    = std::clamp(d.position.x, 0.0f, 1.0f);
-            det.center_y    = std::clamp(d.position.y, 0.0f, 1.0f);
+            det.center_x    = std::clamp(d.position.x, 0.0, 1.0);
+            det.center_y    = std::clamp(d.position.y, 0.0, 1.0);
             det.depth_m     = std::isfinite(d.position.z) ? d.position.z : -1.0f;
             det.bbox_width  = std::clamp(d.bbox_width,  0.0f, 1.0f);
             det.bbox_height = std::clamp(d.bbox_height, 0.0f, 1.0f);

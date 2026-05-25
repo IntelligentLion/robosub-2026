@@ -80,6 +80,9 @@ class LocalizationNode(Node):
 
         self.create_subscription(
             Odometry, 'odom/bottom', self._odom_cb, 10)
+        # Accept VSLAM odometry as an alternative VIO source
+        self.create_subscription(
+            Odometry, 'vslam/odometry', self._odom_cb, 10)
         self.create_subscription(
             PoseStamped, 'localization/correction', self._correction_cb, 10)
         self.create_subscription(
