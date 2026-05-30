@@ -39,8 +39,11 @@ Expected base: **JetPack 6 / Ubuntu 22.04**.
 - **ROS 2 Humble** — `source /opt/ros/humble/setup.bash`
 - **ZED SDK ≥ 4.0** + the **`pyzed`** Python API (bundled with the SDK installer).
   Requires CUDA (ships with JetPack).
-- **TensorRT** (ships with JetPack) — used by `detector.py` for the FP16 engine.
-- **onnxruntime** (CPU/GPU) — fallback detector backend.
+- **TensorRT** (ships with JetPack) — **primary detector backend** (FP16 engine).
+  We run TensorRT, not onnxruntime, for the **lower inference latency** on the
+  Orin Nano.
+- **onnxruntime** — fallback only (used if no TRT engine can be built, e.g. low
+  free VRAM). Keep it installed, but it is not the intended runtime path.
 - **pymavlink** — `pip install pymavlink` — Pixhawk/thruster comms.
 - **ultralytics** (only if running a `.pt` model instead of ONNX).
 - For the C++ behavior tree (`bt_mission`):
@@ -81,15 +84,22 @@ sudo ./setup_vision_env.sh
 `*.onnx`, `*.engine`, `*.pt` are **not** in git. Get them from team storage and
 place them where the code expects:
 
-- `detector.py` default: `src/vision/vision/yolov8n.onnx`
-  (override with `--onnx /path` or `--weights model.pt`).
-- The TensorRT engine is built **on first run** (~2–5 min) and cached next to the
-  `.onnx` as `*.engine`. To pre-build offline (recommended — avoids OOM competing
-  with the camera):
+**Backend: TensorRT FP16 (primary, for latency).** The `.onnx` is just the *source*
+the engine is built from — at runtime we execute the compiled `.engine`, not
+onnxruntime. `get_shared_model()` in `detector.py` prefers TensorRT whenever an
+engine exists (or enough VRAM is free to build one) and only falls back to
+onnxruntime otherwise.
+
+- `detector.py` default model: `src/vision/vision/yolov8n.onnx`
+  (override with `--onnx /path`; `--weights model.pt` uses Ultralytics instead).
+- **Pre-build the engine offline** (strongly recommended — building during a run
+  competes with the ZED for VRAM and can OOM). It's cached next to the `.onnx` as
+  `*.engine`:
   ```bash
   python3 build_engine.py src/vision/vision/yolov8n.onnx --fp16
   ```
-- `convert_to_onnx.py` regenerates an ONNX from a `.pt` if needed.
+  If you skip this, the engine is built on first run (~2–5 min) instead.
+- `convert_to_onnx.py` regenerates an ONNX from a `.pt` if you need a new source.
 
 ---
 
@@ -144,12 +154,16 @@ behavior tree → vision detector → depth node. It auto-falls back to thruster
 **simulation mode** if no Pixhawk serial device is present.
 
 ```bash
-# ONNX model:
+# Standard path — TensorRT FP16 engine built from this .onnx (lower latency):
 ./src/run_stack.sh --onnx src/vision/vision/yolov8n.onnx 0.4 320 cuda 1.5
-# PyTorch model:
+# PyTorch model (Ultralytics backend, not TRT):
 ./src/run_stack.sh src/vision/vision/model.pt 0.4 320 cuda 1.5
 #                  <model> <conf> <imgsz> <device> <stop_dist_m>
 ```
+
+> The `--onnx` flag does **not** mean "run onnxruntime" — it points at the model
+> the **TensorRT** engine is built/loaded from. Pre-build with `build_engine.py`
+> (§3) so the first run doesn't pay the ~2–5 min build cost or risk OOM.
 
 > The behavior tree launched is still the **legacy** `mission/bt_runner` (the
 > working one). SHRUB v4 (`bt_mission/bt_executor`) is canonical going forward but

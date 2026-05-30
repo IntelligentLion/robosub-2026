@@ -7,6 +7,46 @@ package (`main.cpp`, BehaviorTree.CPP **v3**, executable `bt_runner`) remains th
 still launches `bt_runner`** on purpose. Do not repoint it at `bt_executor`
 until the nodes below are ported and pool-verified.
 
+## v3 → v4: the season-over-season migration (2025 → 2026)
+
+This is a yearly transition, not just a refactor. "v3" and "v4" are SHRUB
+software generations tied to competition seasons:
+
+| | **SHRUB v3 (last season)** | **SHRUB v4 (this season, 2026)** |
+|---|---|---|
+| Package | `src/mission/` (`mission`) | `src/robosub2026/` (`bt_mission`) |
+| Executable | `bt_runner` | `bt_executor` |
+| BT engine | BehaviorTree.CPP **v3** | BehaviorTree.CPP **v4** (+ `behaviortree_ros2`) |
+| Structure | one monolithic ~2000-line `main.cpp` (publishers, subscribers, and all BT nodes inline) | modular node files (`safety/nav/perception/manipulation/task_logic`) + a **declarative** `bt_xml/robosub2026_mission.xml` |
+| Mission | last season's course | 2026 **"Restore and Recovery"** course |
+
+**What changed and why:**
+
+1. **New course (2026 "Restore and Recovery").** The task set and scoring differ
+   from last season: role selection at the gate (Survey & Repair vs Search &
+   Rescue), Avoid Debris (slalom), Recon (bins/markers), Deploy (torpedoes),
+   Resupply (octagon), Return Home — plus the time-bonus strategy (touch buoy +
+   drop marker/fire torpedo + surface in float area). See `docs/` and the
+   top-level `README.md` → Mission Strategy. The v4 node vocabulary
+   (`Detect_bin_below`, `Align_to_opening`, `Surface_in_float_area`, …) was
+   designed around these 2026 tasks; the v3 nodes were named for last season.
+
+2. **BT.CPP v3 → v4 API change.** v4 changed the node base classes and config
+   (`NodeConfig`, `SyncActionNode`/`StatefulActionNode` with
+   `onStart/onRunning/onHalted`, ports with defaults). v3 node code does not
+   compile under v4 — it has to be rewritten, not copied.
+
+3. **Monolith → modular + declarative tree.** v4 splits responsibilities into
+   separate translation units and moves the mission *structure* into XML so the
+   tree can be edited/visualized (Groot2) without recompiling. This is the
+   maintainability win that justified the rewrite.
+
+**Why we re-port instead of reuse:** the *proven, tuned* behavior — vision
+servoing, centering/approach loops, gate/slalom logic — still lives in v3's
+`main.cpp`. The v4 package was authored as a clean skeleton (stubs). Migration =
+carry the proven v3 logic forward into the v4 node structure, adapting it to the
+2026 tasks and the v4 API. The node-by-node map below is that carry-over list.
+
 ## Why a migration is needed
 
 The v4 node bodies were stubs (`return SUCCESS;`) that never touched ROS. The
