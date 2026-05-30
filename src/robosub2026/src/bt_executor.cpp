@@ -2,6 +2,7 @@
 // Loads the mission XML, registers all custom nodes, ticks the tree.
 
 #include <bt_mission/shrub_nodes.hpp>
+#include <bt_mission/mission_io.hpp>
 #include <behaviortree_cpp/bt_factory.h>
 #include <behaviortree_cpp/loggers/bt_cout_logger.h>
 #include <rclcpp/rclcpp.hpp>
@@ -13,6 +14,10 @@ int main(int argc, char** argv)
 {
   rclcpp::init(argc, argv);
   auto ros_node = std::make_shared<rclcpp::Node>("shrub_executor");
+
+  // Connect the tree to the Python autonomy stack (movement/nav commands +
+  // vision/depth/pose feedback). Must happen before any node ticks.
+  shrub::MissionIO::init(ros_node);
 
   // --- Declare parameters ---
   ros_node->declare_parameter<std::string>("bt_xml", "robosub2026_mission.xml");
@@ -105,6 +110,16 @@ int main(int argc, char** argv)
 
     // Spin ROS callbacks (sensor updates, action feedback)
     rclcpp::spin_some(ros_node);
+
+    // Push live sensor values onto the blackboard for the safety monitor.
+    // Only overwrite "depth" once we actually have a reading (<0 == unknown),
+    // otherwise the seeded 0.0 keeps IsDepthSafe from false-tripping.
+    // NOTE: battery_pct and leak_detected have no publisher in the current
+    // stack yet — see MIGRATION.md. They keep their seeded defaults.
+    double live_depth = shrub::MissionIO::get().depth();
+    if (live_depth >= 0.0) {
+      bb->set("depth", live_depth);
+    }
 
     // Tick the tree
     try {

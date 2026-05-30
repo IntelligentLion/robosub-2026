@@ -1,6 +1,15 @@
-# RoboSub 2026 - SHRUB v3 Mission Planner
+# RoboSub 2026 - SHRUB v4 Mission Planner
 
 **SHRUB (Software for Handling and Regulating Underwater Behavior)** is an autonomous mission planner for the RoboSub 2026 competition, developed by Team IntelligentLion. Built on BehaviorTree.CPP v4 and ROS 2 Humble, SHRUB coordinates all high-level decision-making for our autonomous underwater vehicle (AUV).
+
+> **⚠️ Repo status (read before running):** SHRUB v4 lives in `src/robosub2026/`
+> (package `bt_mission`) and is the canonical planner going forward, but its BT
+> nodes are still being ported from the legacy `src/mission/` package and are
+> **not yet pool-verified**. Until the port is done, `src/run_stack.sh` launches
+> the working **legacy** `mission/bt_runner`. See
+> [`src/robosub2026/MIGRATION.md`](src/robosub2026/MIGRATION.md) for the plan and
+> current state. VSLAM is intentionally disabled for competition — see
+> `src/localization/launch/vslam_localization_launch.py` for the rationale.
 
 ---
 
@@ -22,7 +31,7 @@
 
 ## Overview
 
-SHRUB v3 is a complete rewrite of our mission planning system using hierarchical behavior trees. The system autonomously navigates an underwater course, completing various tasks to maximize points within a 15-minute time window.
+SHRUB v4 is a complete rewrite of our mission planning system using hierarchical behavior trees. The system autonomously navigates an underwater course, completing various tasks to maximize points within a 15-minute time window.
 
 ### Key Features
 

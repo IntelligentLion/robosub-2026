@@ -40,7 +40,7 @@ fi
 
 if [[ ! -f "${WORKSPACE_DIR}/install/setup.bash" ]]; then
   echo "Workspace not built yet. Run:"
-  echo "  cd ${WORKSPACE_DIR} && source /opt/ros/humble/setup.bash && colcon build --symlink-install --packages-select auv_msgs vision mission mavlink_thruster_control localization control"
+  echo "  cd ${WORKSPACE_DIR} && source /opt/ros/humble/setup.bash && colcon build --symlink-install --packages-select auv_msgs vision mission bt_mission mavlink_thruster_control localization control"
   exit 1
 fi
 
@@ -93,7 +93,12 @@ PIDS+=($!)
 sleep 1
 
 # ─── 4. Behavior tree ───────────────────────────────────────────────
-echo "Starting behavior tree..."
+# NOTE: bt_mission (SHRUB v4) is the canonical planner going forward, but its
+# nodes are still being ported from the legacy mission/main.cpp (see
+# src/robosub2026/MIGRATION.md). Until that port is pool-verified we launch the
+# working legacy runner. To switch: replace the line below with
+#   ros2 run bt_mission bt_executor &
+echo "Starting behavior tree (legacy mission/bt_runner — see MIGRATION.md)..."
 ros2 run mission bt_runner &
 PIDS+=($!)
 sleep 1

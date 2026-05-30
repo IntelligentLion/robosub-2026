@@ -593,6 +593,10 @@ def run_detector(node):
     parser.add_argument('--conf_thres', type=float, default=0.4)
     parser.add_argument('--device', type=str, default='cuda')
     parser.add_argument('--zed_fps', type=int, default=60)
+    parser.add_argument('--view', action='store_true',
+                        help='Show the annotated live OpenCV window. OFF by default — '
+                             'on the headless sub the per-frame full-res retrieve + render '
+                             '+ GUI pump is wasted work on the Jetson.')
     opt = parser.parse_args()
 
     onnx_path = opt.onnx
@@ -773,25 +777,29 @@ def run_detector(node):
                 sub_depth_m = -float(translation[1])
                 node.publish_sub_depth(sub_depth_m)
 
-            # Render
-            zed.retrieve_image(image_left, sl.VIEW.LEFT, sl.MEM.CPU, display_resolution)
-            image_left_ocv = image_left.get_data()
-            if object_detection_enabled:
-                cv_viewer.render_2D(image_left_ocv, image_scale, objects, obj_param.enable_tracking)
-
-            cv2.putText(image_left_ocv, hud_line1,
-                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0, 255), 2)
-            cv2.putText(image_left_ocv, f'DEVICE: {inference_device} img:{opt.img_size} [{mode_label}]',
-                        (10, 62), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255, 255), 2)
-            cv2.putText(image_left_ocv, hud_line3,
-                        (10, 94), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 0, 255), 2)
-            cv2.imshow('ZED | Live View', image_left_ocv)
-
             node.publish_detections(local_infos)
 
-            key = cv2.waitKey(1)
-            if key in [27, ord('q'), ord('Q')]:
-                exit_signal = True
+            # Optional live view — OFF by default. On the headless sub this
+            # second full-resolution retrieve_image + render_2D + GUI pump runs
+            # every frame for nothing; skipping it frees CPU/USB bandwidth on
+            # the Orin Nano. Enable with --view when debugging on a desk.
+            if opt.view:
+                zed.retrieve_image(image_left, sl.VIEW.LEFT, sl.MEM.CPU, display_resolution)
+                image_left_ocv = image_left.get_data()
+                if object_detection_enabled:
+                    cv_viewer.render_2D(image_left_ocv, image_scale, objects, obj_param.enable_tracking)
+
+                cv2.putText(image_left_ocv, hud_line1,
+                            (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0, 255), 2)
+                cv2.putText(image_left_ocv, f'DEVICE: {inference_device} img:{opt.img_size} [{mode_label}]',
+                            (10, 62), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255, 255), 2)
+                cv2.putText(image_left_ocv, hud_line3,
+                            (10, 94), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 0, 255), 2)
+                cv2.imshow('ZED | Live View', image_left_ocv)
+
+                key = cv2.waitKey(1)
+                if key in [27, ord('q'), ord('Q')]:
+                    exit_signal = True
     finally:
         exit_signal = True
         frame_ready.set()

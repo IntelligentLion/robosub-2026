@@ -14,6 +14,7 @@ find_package(behaviortree_ros2 REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(auv_msgs REQUIRED)
 
 set(DEPS
   rclcpp
@@ -23,10 +24,12 @@ set(DEPS
   std_msgs
   geometry_msgs
   sensor_msgs
+  auv_msgs
 )
 
 # --- Shared library of all custom BT nodes ---
 add_library(shrub_nodes SHARED
+  src/mission_io.cpp
   src/safety_nodes.cpp
   src/nav_nodes.cpp
   src/perception_nodes.cpp

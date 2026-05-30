@@ -8,6 +8,7 @@
 // ROS 2 action servers from your sub's navigation stack.
 
 #include <bt_mission/shrub_nodes.hpp>
+#include <bt_mission/mission_io.hpp>
 
 namespace shrub {
 
@@ -45,8 +46,12 @@ BT::NodeStatus EmergencySurface::tick() {
   std::string reason;
   getInput("reason", reason);
   RCLCPP_ERROR(rclcpp::get_logger("shrub"), "EMERGENCY SURFACE: %s", reason.c_str());
-  // TODO: Command immediate ballast blow / full upward thrust
-  // Return FAILURE so ReactiveSequence halts the mission
+  // Command full upward thrust via the thruster stack. Open-loop and
+  // intentionally unconditional — this is the safety abort path.
+  if (MissionIO::ready()) {
+    MissionIO::get().sendMovement("emerge", 0.8);
+  }
+  // Return FAILURE so the parent ReactiveSequence halts the mission.
   return BT::NodeStatus::FAILURE;
 }
 
