@@ -80,6 +80,15 @@ if ! kill -0 "${PIDS[-1]}" 2>/dev/null; then
   echo "[WARN] Thruster controller failed to start – continuing in degraded mode"
 fi
 
+# ─── 1b. Safety monitor (battery + leak) ───────────────────────────
+# Defaults to simulate mode (publishes nominal 100% battery, leak=false) so
+# the BT's CriticalFailure branch only fires on real low-battery / leak.
+# Plug real Pixhawk / leak GPIO via ROS params (see safety_monitor_node.py).
+echo "Starting safety monitor..."
+ros2 run mavlink_thruster_control safety_monitor_node &
+PIDS+=($!)
+sleep 1
+
 # ─── 2. Localization node ──────────────────────────────────────────
 echo "Starting localization node..."
 ros2 run localization localization_node &

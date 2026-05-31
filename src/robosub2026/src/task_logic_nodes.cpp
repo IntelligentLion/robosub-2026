@@ -81,6 +81,7 @@ void registerAllNodes(BT::BehaviorTreeFactory& factory,
   REG(LoadMissionParameters);
   REG(ZeroStateEstimator);
   REG(WaitForStartSignal);
+  REG(ResetTaskTimer);
   REG(SubmergeToMissionDepth);
 
   // --- Gate ---

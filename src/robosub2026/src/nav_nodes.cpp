@@ -73,6 +73,16 @@ LOG_SYNC_OK(LoadMissionParameters, "[init] load mission parameters")
 LOG_SYNC_OK(ZeroStateEstimator,    "[init] zero state estimator")
 LOG_SYNC_OK(WaitForStartSignal,    "[init] start signal received (passthrough)")
 
+// ResetTaskTimer — write the current monotonic time onto the blackboard so
+// `TaskTimeout` measures per-subtree (rather than per-mission) elapsed time.
+BT::NodeStatus ResetTaskTimer::tick() {
+  double now = std::chrono::duration<double>(
+      std::chrono::steady_clock::now().time_since_epoch()).count();
+  if (auto bb = config().blackboard) bb->set("task_start_time", now);
+  RCLCPP_INFO(lg(), "[task] timer reset (now=%.1f)", now);
+  return BT::NodeStatus::SUCCESS;
+}
+
 // Submerge to mission depth — open-loop submerge for ~6s with depth gate.
 BT::NodeStatus SubmergeToMissionDepth::onStart() {
   double target = 1.5;

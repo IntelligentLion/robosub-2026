@@ -27,7 +27,10 @@
 #include <auv_msgs/msg/object_detection_array.hpp>
 #include <auv_msgs/msg/depth_info.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
+#include <std_msgs/msg/bool.hpp>
+#include <std_msgs/msg/float32.hpp>
 
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -70,6 +73,8 @@ public:
   // Best detection matching `label` above `min_conf`; returns false if none/stale.
   bool bestDetection(const std::string& label, double min_conf, Detection& out) const;
   bool pose(double& x, double& y, double& z, double& yaw) const;  // false until first pose
+  double batteryPct() const;  // 0..100, NaN if unknown
+  bool leakDetected() const;  // false until first publish
 
   rclcpp::Node::SharedPtr node() const { return node_; }
   rclcpp::Logger logger() const { return node_->get_logger(); }
@@ -80,6 +85,8 @@ private:
   void onDetections(const auv_msgs::msg::ObjectDetectionArray::SharedPtr msg);
   void onDepth(const auv_msgs::msg::DepthInfo::SharedPtr msg);
   void onPose(const geometry_msgs::msg::PoseStamped::SharedPtr msg);
+  void onBattery(const std_msgs::msg::Float32::SharedPtr msg);
+  void onLeak(const std_msgs::msg::Bool::SharedPtr msg);
 
   static std::unique_ptr<MissionIO> inst_;
 
@@ -89,6 +96,8 @@ private:
   rclcpp::Subscription<auv_msgs::msg::ObjectDetectionArray>::SharedPtr det_sub_;
   rclcpp::Subscription<auv_msgs::msg::DepthInfo>::SharedPtr depth_sub_;
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr pose_sub_;
+  rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr battery_sub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr leak_sub_;
 
   mutable std::mutex mtx_;
   double depth_m_{-1.0};
@@ -96,6 +105,8 @@ private:
   rclcpp::Time dets_stamp_;
   double px_{0.0}, py_{0.0}, pz_{0.0}, pyaw_{0.0};
   bool pose_ok_{false};
+  double battery_pct_{std::numeric_limits<double>::quiet_NaN()};
+  bool leak_{false};
 };
 
 }  // namespace shrub

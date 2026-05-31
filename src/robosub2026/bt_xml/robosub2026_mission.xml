@@ -112,6 +112,7 @@
     <Action ID="LoadMissionParameters"/>
     <Action ID="ZeroStateEstimator"/>
     <Action ID="WaitForStartSignal"/>
+    <Action ID="ResetTaskTimer"/>
     <Action ID="SubmergeToMissionDepth">
       <input_port name="depth_m" default="1.5" type="double"/>
     </Action>
@@ -312,6 +313,7 @@
 
   <BehaviorTree ID="HeadingOutAndGate">
     <Sequence name="HeadingOutSequence">
+      <Action ID="ResetTaskTimer"/>
       <SubTree ID="DetermineStartOrientation"/>
       <SubTree ID="StabilizeVehicle"/>
       <SubTree ID="SearchForGate"/>
@@ -458,6 +460,7 @@
 
   <BehaviorTree ID="SlalomTask">
     <Sequence name="SlalomSequence">
+      <Action ID="ResetTaskTimer"/>
       <Action ID="DetectOrangePath"/>
       <Action ID="FollowPath"/>
       <Action ID="SearchSlalomPoles"/>
@@ -506,6 +509,7 @@
 
   <BehaviorTree ID="ReconBinsTask">
     <Sequence name="ReconBinsSequence">
+      <Action ID="ResetTaskTimer"/>
       <Action ID="FollowPathMarker"/>
       <Action ID="SearchPipeline"/>
       <SubTree ID="IdentifyRoleBins"/>
@@ -570,6 +574,7 @@
 
   <BehaviorTree ID="DeployTorpedoesTask">
     <Sequence name="DeploySequence">
+      <Action ID="ResetTaskTimer"/>
       <Action ID="SearchTargetBoard"/>
       <Action ID="IdentifyRoleBoard"/>
       <SubTree ID="AlignLargeOpening"/>
@@ -626,6 +631,7 @@
 
   <BehaviorTree ID="ResupplyOctagonTask">
     <Sequence name="OctagonSequence">
+      <Action ID="ResetTaskTimer"/>
       <Action ID="NavigateToOctagon"/>
       <Action ID="DetectOctagon"/>
       <Action ID="EnterOctagon"/>
@@ -700,6 +706,7 @@
 
   <BehaviorTree ID="ReturnHomeTask">
     <Sequence name="ReturnHomeSequence">
+      <Action ID="ResetTaskTimer"/>
       <Action ID="NavigateToStart"/>
       <Action ID="SearchStartGate"/>
       <Action ID="AlignStartGate"/>

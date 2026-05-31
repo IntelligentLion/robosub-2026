@@ -43,10 +43,17 @@ MissionIO::MissionIO(rclcpp::Node::SharedPtr node)
   pose_sub_ = node_->create_subscription<geometry_msgs::msg::PoseStamped>(
       "localization/pose", 10,
       std::bind(&MissionIO::onPose, this, std::placeholders::_1));
+  battery_sub_ = node_->create_subscription<std_msgs::msg::Float32>(
+      "/safety/battery_pct", 10,
+      std::bind(&MissionIO::onBattery, this, std::placeholders::_1));
+  leak_sub_ = node_->create_subscription<std_msgs::msg::Bool>(
+      "/safety/leak_detected", 10,
+      std::bind(&MissionIO::onLeak, this, std::placeholders::_1));
 
   RCLCPP_INFO(node_->get_logger(),
               "MissionIO ready — publishing movement_command / navigation_command, "
-              "subscribed to vision/detections, depth/info, localization/pose");
+              "subscribed to vision/detections, depth/info, localization/pose, "
+              "/safety/battery_pct, /safety/leak_detected");
 }
 
 // ─── Publishers ──────────────────────────────────────────────────
@@ -142,6 +149,26 @@ bool MissionIO::pose(double& x, double& y, double& z, double& yaw) const {
   if (!pose_ok_) return false;
   x = px_; y = py_; z = pz_; yaw = pyaw_;
   return true;
+}
+
+double MissionIO::batteryPct() const {
+  std::lock_guard<std::mutex> lk(mtx_);
+  return battery_pct_;
+}
+
+bool MissionIO::leakDetected() const {
+  std::lock_guard<std::mutex> lk(mtx_);
+  return leak_;
+}
+
+void MissionIO::onBattery(const std_msgs::msg::Float32::SharedPtr msg) {
+  std::lock_guard<std::mutex> lk(mtx_);
+  battery_pct_ = static_cast<double>(msg->data);
+}
+
+void MissionIO::onLeak(const std_msgs::msg::Bool::SharedPtr msg) {
+  std::lock_guard<std::mutex> lk(mtx_);
+  leak_ = msg->data;
 }
 
 }  // namespace shrub

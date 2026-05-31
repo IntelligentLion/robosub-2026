@@ -153,6 +153,7 @@ SHRUB_SYNC(VerifyTorpedoLauncher)
 SHRUB_SYNC(LoadMissionParameters)
 SHRUB_SYNC(ZeroStateEstimator)
 SHRUB_SYNC(WaitForStartSignal)
+SHRUB_SYNC(ResetTaskTimer)  // sets `task_start_time` = now(); call at start of each task
 SHRUB_STATEFUL_P(SubmergeToMissionDepth,
                  BT::InputPort<double>("depth_m", 1.5, "target depth (m)"))
 

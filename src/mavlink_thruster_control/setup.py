@@ -20,7 +20,8 @@ setup(
     license='Apache-2.0',
     entry_points={
         'console_scripts': [
-            'thruster_node = mavlink_thruster_control.thruster_node:main'
+            'thruster_node = mavlink_thruster_control.thruster_node:main',
+            'safety_monitor_node = mavlink_thruster_control.safety_monitor_node:main',
         ],
     },
 )

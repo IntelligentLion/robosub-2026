@@ -107,8 +107,8 @@ falls back to a node-local default.
 | `obstacle_detected` | bool | false | (future obstacle module) | `ObstacleDetected`, `NoCollisionRisk` |
 | `depth_unstable` | bool | false | (future depth monitor) | `DepthUnstable` |
 | `critical_failure` | bool | false | (set by safety logic) | `CriticalFailure` |
-| `battery_pct` | double | 100 | **TODO: Pixhawk SYS_STATUS** | (reserved — no battery condition in current tree) |
-| `leak_detected` | bool | false | **TODO: leak GPIO** | (reserved — no leak condition in current tree) |
+| `battery_pct` | double | 100 | `safety_monitor_node` → MissionIO → executor | executor uses it to trip `critical_failure` below `battery_critical_pct` |
+| `leak_detected` | bool | false | `safety_monitor_node` → MissionIO → executor | executor uses it to trip `critical_failure` |
 
 ## Vision label vocabulary used by the tree
 
@@ -134,19 +134,26 @@ behavior.
 1. **Roll/Pitch primitives** — `Roll90` / `Pitch90` log a warning today
    because `MovementCommand` has no roll/pitch axis. Add them (or send a
    compound thruster mix from `thruster_node`) for full style-point support.
-2. **Battery + leak publishers** — `battery_pct` / `leak_detected` keep
-   their seeded defaults. Add a hardware monitor (Pixhawk `SYS_STATUS`
-   battery, leak GPIO) and push onto the blackboard each tick (mirror the
-   `depth` pattern in `bt_executor`).
+2. **Real battery + leak hardware** — `safety_monitor_node` publishes
+   `/safety/battery_pct` and `/safety/leak_detected`, MissionIO subscribes,
+   and `bt_executor` flips `critical_failure` when battery dips below
+   `battery_critical_pct` (default 15 %) or leak trips → `GlobalRecovery`
+   runs `SurfaceSafely`. Defaults to **simulate mode** (publishes 100 % /
+   no leak). For the real sub: pass `simulate:=false` and set either
+   `serial_port` (own Pixhawk link) or `udp_endpoint` (consume a
+   mavproxy/mavlink-router forward). Leak sensor: replace the stub
+   `_read_leak_gpio()` with the actual sysfs/libgpiod read.
 3. **Manipulation drivers** — `ReleaseMarker`, `LaunchTorpedo`,
    `ActivateTool`, `ReleaseObject` log + update counters but do not call
    real ROS services. Replace each `TODO: <driver>` comment when the driver
    lands.
 4. **Altitude** — `ValidDropAltitude` reads a blackboard `altitude_m` that
-   nothing publishes. Wire a DVL/sonar altimeter when available.
-5. **TaskTimeout granularity** — currently uses the mission start time as
-   `task_start_time`. For per-subtree timeouts, reset `task_start_time`
-   when entering each task subtree.
+   nothing publishes. Wire a sonar altimeter when available (no DVL on the
+   sub this season).
+5. ~~TaskTimeout granularity — wants per-subtree reset.~~ Done: a
+   `ResetTaskTimer` action runs as the first child of every top-level task
+   subtree (HeadingOutAndGate, SlalomTask, ReconBinsTask,
+   DeployTorpedoesTask, ResupplyOctagonTask, ReturnHomeTask).
 
 ## Definition of done
 

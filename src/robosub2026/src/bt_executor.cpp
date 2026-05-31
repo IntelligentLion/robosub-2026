@@ -30,10 +30,13 @@ int main(int argc, char** argv) {
   ros_node->declare_parameter<std::string>("run_mode", "semifinal");
   ros_node->declare_parameter<bool>("style_enabled", true);
   ros_node->declare_parameter<int>("tick_rate_ms", 50);
+  // Safety thresholds — trip critical_failure (→ GlobalRecovery) when crossed.
+  ros_node->declare_parameter<double>("battery_critical_pct", 15.0);
 
   std::string xml_file, tree_id, coin_flip, role, gate_red_side, run_mode;
   bool style_enabled;
   int tick_rate_ms;
+  double battery_critical_pct = 15.0;
   ros_node->get_parameter("bt_xml", xml_file);
   ros_node->get_parameter("tree_id", tree_id);
   ros_node->get_parameter("coin_flip", coin_flip);
@@ -42,6 +45,7 @@ int main(int argc, char** argv) {
   ros_node->get_parameter("run_mode", run_mode);
   ros_node->get_parameter("style_enabled", style_enabled);
   ros_node->get_parameter("tick_rate_ms", tick_rate_ms);
+  ros_node->get_parameter("battery_critical_pct", battery_critical_pct);
 
   // --- Resolve XML path ---
   std::string xml_path;
@@ -146,6 +150,24 @@ int main(int argc, char** argv) {
     // depth < 0 means "not yet received" — keep the seeded default in that case.
     double live_depth = shrub::MissionIO::get().depth();
     if (live_depth >= 0.0) bb->set("depth", live_depth);
+
+    // Battery + leak from safety_monitor_node. Flip critical_failure when
+    // battery dips below the configured threshold OR a leak is detected;
+    // GlobalRecovery's CriticalFailure branch then drives SurfaceSafely.
+    double batt = shrub::MissionIO::get().batteryPct();
+    if (std::isfinite(batt)) bb->set("battery_pct", batt);
+    bool leak = shrub::MissionIO::get().leakDetected();
+    bb->set("leak_detected", leak);
+    bool already_critical = false;
+    (void)bb->get<bool>("critical_failure", already_critical);
+    bool should_critical = leak ||
+                           (std::isfinite(batt) && batt < battery_critical_pct);
+    if (should_critical && !already_critical) {
+      RCLCPP_ERROR(ros_node->get_logger(),
+                   "SAFETY: critical_failure tripped (battery=%.1f%%, leak=%s)",
+                   batt, leak ? "true" : "false");
+      bb->set("critical_failure", true);
+    }
 
     try {
       status = tree.tickOnce();
