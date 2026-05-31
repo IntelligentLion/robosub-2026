@@ -8,8 +8,15 @@ Topics published
 Sources
 -------
   * **Battery**: Pixhawk MAVLink `SYS_STATUS.battery_remaining` (0..100 or -1).
+    If that returns -1 (ArduSub `BATT_CAPACITY` not set / no power-module mAh
+    integration), we fall back to a voltage→% lookup on
+    `SYS_STATUS.voltage_battery` calibrated for the **sub's actual battery
+    pack**: 2× Blue Robotics 14.8 V / 10 Ah LiPo wired in parallel (4S, 20 Ah
+    total). Curve: 16.4 V→100 %, 14.8 V→50 %, 14.0 V→20 %, 13.2 V→5 %,
+    12.0 V→0 %. Below 14.0 V the default `battery_critical_pct` (15 %) in
+    `bt_executor` trips `critical_failure`.
     In simulate mode (no Pixhawk plugged in, or `simulate:=true`), publishes a
-    nominal 100 % at 1 Hz so the rest of the stack ticks normally on the desk.
+    nominal 100 % so the rest of the stack ticks normally on the desk.
   * **Leak**: stub `_read_leak_gpio()` returning False. Replace with the actual
     sysfs / libgpiod read when the leak sensor is wired. (No leak hardware on
     the sub today.)
@@ -113,13 +120,44 @@ class SafetyMonitor(Node):
                 msg = self.master.recv_match(type='SYS_STATUS', blocking=False)
                 if msg is None:
                     break
-                # battery_remaining: 0..100 or -1 if unknown
+                # Prefer ArduSub's calibrated remaining-% (needs BATT_CAPACITY set).
                 pct = float(msg.battery_remaining)
+                if pct < 0:
+                    # Fallback: voltage→% lookup for the sub's 2× 14.8V/10Ah pack.
+                    volts = msg.voltage_battery / 1000.0 if msg.voltage_battery > 0 else 0.0
+                    if volts > 0:
+                        pct = self._voltage_to_pct(volts)
                 if pct >= 0:
                     self._last_battery_pct = pct
                     self._last_sys_status_t = _time.time()
         except Exception as e:
             self.get_logger().warn(f'SYS_STATUS read error: {e}')
+
+    @staticmethod
+    def _voltage_to_pct(v: float) -> float:
+        """Piecewise-linear discharge curve for the sub's pack
+        (2× Blue Robotics 14.8 V / 10 Ah LiPo in parallel — 4S, 20 Ah total).
+        Calibration points (volts → %):
+            16.4 → 100   (fully charged 4S)
+            15.2 → 80
+            14.8 → 50    (nominal 4S resting voltage at ~half discharge)
+            14.0 → 20    (recommended stop — bt_executor trips below 15 %)
+            13.2 → 5
+            12.0 → 0     (absolute floor — 3.0 V/cell, do NOT discharge below)
+        """
+        if v <= 0:
+            return -1.0  # unknown
+        pts = [(16.4, 100.0), (15.2, 80.0), (14.8, 50.0),
+               (14.0, 20.0),  (13.2, 5.0),  (12.0, 0.0)]
+        if v >= pts[0][0]:
+            return 100.0
+        if v <= pts[-1][0]:
+            return 0.0
+        for (v_hi, p_hi), (v_lo, p_lo) in zip(pts, pts[1:]):
+            if v_lo <= v <= v_hi:
+                t = (v - v_lo) / (v_hi - v_lo)
+                return p_lo + t * (p_hi - p_lo)
+        return 0.0
 
     # ─── Leak sensor (stub) ────────────────────────────────────────────
     def _read_leak_gpio(self) -> bool:

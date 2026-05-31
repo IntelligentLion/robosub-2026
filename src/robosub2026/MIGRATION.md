@@ -141,12 +141,19 @@ behavior.
    runs `SurfaceSafely`. Defaults to **simulate mode** (publishes 100 % /
    no leak). For the real sub: pass `simulate:=false` and set either
    `serial_port` (own Pixhawk link) or `udp_endpoint` (consume a
-   mavproxy/mavlink-router forward). Leak sensor: replace the stub
-   `_read_leak_gpio()` with the actual sysfs/libgpiod read.
+   mavproxy/mavlink-router forward).
+   **Battery pack:** 2× Blue Robotics 14.8 V / 10 Ah LiPo in parallel
+   (4S, 20 Ah). When ArduSub returns `battery_remaining=-1` (BATT_CAPACITY
+   not set), the node falls back to a voltage→% piecewise curve calibrated
+   for this pack: 16.4 V→100 %, 14.8 V→50 %, 14.0 V→20 % (trip), 12.0 V→0 %.
+   Leak sensor: replace the stub `_read_leak_gpio()` with the actual
+   sysfs/libgpiod read.
 3. **Manipulation drivers** — `ReleaseMarker`, `LaunchTorpedo`,
    `ActivateTool`, `ReleaseObject` log + update counters but do not call
-   real ROS services. Replace each `TODO: <driver>` comment when the driver
-   lands.
+   real ROS services. Driver pseudocode (marker dropper, torpedo launcher,
+   gripper, magnetic tool) lives in
+   [`MANIPULATION_DRIVERS.md`](MANIPULATION_DRIVERS.md) — each is a small
+   ROS 2 node behind a `std_srvs/Trigger` service that the BT calls.
 4. **Altitude** — `ValidDropAltitude` reads a blackboard `altitude_m` that
    nothing publishes. Wire a sonar altimeter when available (no DVL on the
    sub this season).
