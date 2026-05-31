@@ -59,12 +59,18 @@ void MissionIO::sendMovement(const std::string& command, double speed, double du
 }
 
 void MissionIO::sendNav(const std::string& mode, const std::string& target_label,
-                        double speed, double approach_dist) {
+                        double speed, double approach_dist,
+                        double target_yaw,
+                        double target_x, double target_y, double target_z) {
   auv_msgs::msg::NavigationCommand msg;
   msg.mode = mode;
   msg.target_label = target_label;
   msg.speed = static_cast<float>(speed);
   msg.approach_dist = static_cast<float>(approach_dist);
+  msg.target_yaw = static_cast<float>(target_yaw);
+  msg.target_x = static_cast<float>(target_x);
+  msg.target_y = static_cast<float>(target_y);
+  msg.target_z = static_cast<float>(target_z);
   nav_pub_->publish(msg);
 }
 

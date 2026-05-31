@@ -59,7 +59,9 @@ public:
   // ── Command publishers (mirror the Python MovementCommand / NavigationCommand) ──
   void sendMovement(const std::string& command, double speed = 0.0, double duration = 0.0);
   void sendNav(const std::string& mode, const std::string& target_label = "",
-               double speed = 0.0, double approach_dist = 0.0);
+               double speed = 0.0, double approach_dist = 0.0,
+               double target_yaw = 0.0,
+               double target_x = 0.0, double target_y = 0.0, double target_z = 0.0);
   void stop();  // convenience: sendMovement("stop")
 
   // ── Cached sensor reads (thread-safe) ──

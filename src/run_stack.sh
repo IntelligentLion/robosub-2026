@@ -92,14 +92,12 @@ ros2 run control autonomous_controller &
 PIDS+=($!)
 sleep 1
 
-# ─── 4. Behavior tree ───────────────────────────────────────────────
-# NOTE: bt_mission (SHRUB v4) is the canonical planner going forward, but its
-# nodes are still being ported from the legacy mission/main.cpp (see
-# src/robosub2026/MIGRATION.md). Until that port is pool-verified we launch the
-# working legacy runner. To switch: replace the line below with
-#   ros2 run bt_mission bt_executor &
-echo "Starting behavior tree (legacy mission/bt_runner — see MIGRATION.md)..."
-ros2 run mission bt_runner &
+# ─── 4. Behavior tree (SHRUB v4 — bt_mission/bt_executor) ───────────
+# Loads bt_xml/robosub2026_mission.xml (the 2026 "Restore and Recovery" tree)
+# and ticks it at 50 ms. Fall back to the legacy v3 runner during a bring-up
+# issue with:  ros2 run mission bt_runner
+echo "Starting behavior tree (SHRUB v4)..."
+ros2 run bt_mission bt_executor &
 PIDS+=($!)
 sleep 1
 

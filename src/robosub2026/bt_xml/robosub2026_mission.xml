@@ -1,761 +1,749 @@
 <?xml version="1.0" encoding="UTF-8"?>
+
 <!--
-  SHRUB v4 — Software for Handling and Regulating Underwater Behavior
-  RoboSub 2026 · BehaviorTree.CPP v4 · ROS 2 Humble
-  Team: IntelligentLion
-
-  ═══════════════════════════════════════════════════════════════════
-  2026 THEME: "Restore and Recovery"
-  ═══════════════════════════════════════════════════════════════════
-  Two roles: Survey & Repair  vs  Search & Rescue
-  Role chosen at gate by passing under compass/hammer or ring_buoy/SOS side.
-
-  TASK SEQUENCE (follows path markers + pingers):
-    Gate → Slalom (path) → Bins (path) → Torpedoes (pinger) →
-    Octagon (pinger) → Return Home
-
-  NAVIGATION AIDS:
-    Path 1: Gate → Slalom
-    Path 2: Slalom → Bins
-    Pinger 1: at Torpedoes (Deploy)
-    Pinger 2: at Octagon (Resupply)
-
-  POOL: 7 ft (2.1m) deep. 1 ft drop from deck to water.
-  MISSION TIME: 15 min (900s). Surface breach outside octagon = run over.
-  WEIGHT: > 60 kg = DQ
+    ROBOSUB MISSION BEHAVIOR TREE  –  Groot2-compatible
+    ─────────────────────────────────────────────────────────────────────
+    All <TreeNodesModel> declarations and every <BehaviorTree> definition
+    are inside ONE <root> element. This is required for Groot2 to resolve
+    node types and render the tree correctly.
+    ─────────────────────────────────────────────────────────────────────
 -->
 
 <root BTCPP_format="4">
 
-  <!-- ════════════════════════════════════════════════════════════════
-       SHRUB — Top Level
-       ReactiveSequence: SafetyMonitor re-evaluates EVERY tick.
-  -->
-  <BehaviorTree ID="SHRUB">
-    <ReactiveSequence>
-      <SubTree ID="SafetyMonitor"
-               battery_pct="{battery_pct}"
-               leak_detected="{leak_detected}"
-               depth="{depth}"
-               start_time="{start_time}"
-               inside_octagon="{inside_octagon}"/>
-      <SubTree ID="MissionExecution"
-               role="{role}"
-               gate_side="{gate_side}"
-               coin_flip_heading="{coin_flip_heading}"
-               coin_flip_role="{coin_flip_role}"
-               gate_heading="{gate_heading}"
-               inside_octagon="{inside_octagon}"
-               marker_dropped="{marker_dropped}"
-               torpedo_fired="{torpedo_fired}"
-               objects_placed="{objects_placed}"/>
-    </ReactiveSequence>
-  </BehaviorTree>
+  <!-- ═══════════════════════════════════════════════════════════════════
+       TREE NODES MODEL
+       Must be declared BEFORE the BehaviorTree elements.
+       ═══════════════════════════════════════════════════════════════════ -->
 
-
-  <!-- ════════════════════════════════════════════════════════════════
-       SAFETY MONITOR
-       ════════════════════════════════════════════════════════════════
-       Pool: 7 ft (2.1m) deep. 1 ft drop from deck.
-       CRITICAL: surface breach outside octagon = run OVER.
-  -->
-  <BehaviorTree ID="SafetyMonitor">
-    <Sequence>
-      <Fallback>
-        <IsBatteryOk min_pct="20" battery_pct="{battery_pct}"/>
-        <EmergencySurface reason="low_battery"/>
-      </Fallback>
-      <Fallback>
-        <Inverter><IsLeakDetected leak="{leak_detected}"/></Inverter>
-        <EmergencySurface reason="leak"/>
-      </Fallback>
-      <Fallback>
-        <IsDepthSafe max_depth="1.9" depth="{depth}"/>
-        <AscendTo target_depth="1.2"/>
-      </Fallback>
-      <!-- SURFACE BREACH PREVENTION: only surface inside octagon -->
-      <Fallback>
-        <Fallback>
-          <IsDepthSafe min_depth="0.15" depth="{depth}"/>
-          <IsInsideOctagon val="{inside_octagon}"/>
-        </Fallback>
-        <AscendTo target_depth="0.5"/>
-      </Fallback>
-      <!-- Clock: 15 min performance. Leave 30s margin. -->
-      <Fallback>
-        <IsTimeRemaining min_sec="30" start_time="{start_time}"/>
-        <EmergencySurface reason="time_expired"/>
-      </Fallback>
-    </Sequence>
-  </BehaviorTree>
-
-
-  <!-- ════════════════════════════════════════════════════════════════
-       MISSION EXECUTION
-       ════════════════════════════════════════════════════════════════
-       Phase 1: Gate (mandatory — choose role)
-       Phase 2: Slalom (path marker from gate)
-       Phase 3: Bins/Recon (path marker from slalom)
-       Phase 4: Deploy/Torpedoes (pinger-guided)
-       Phase 5: Resupply/Octagon (pinger-guided)
-       Phase 6: Return Home
-
-       Time budget (900s total):
-         Gate ........ 90s   — submerge, detect, choose role, pass through
-         Slalom ...... 90s   — 3 pipe sets, correct side + depth
-         Bins ........ 90s   — drop markers in correct role bins
-         Torpedoes ... 120s  — pinger nav, fire through openings
-         Octagon ..... 180s  — pinger nav, surface, items, baskets, face image
-         Return Home . 90s   — reverse heading, pass back through gate
-         Buffer ...... 240s  — safety margin
-  -->
-  <BehaviorTree ID="MissionExecution">
-    <Sequence>
-
-      <!-- ══ PHASE 1: Gate (mandatory — role selection) ══ -->
-      <Timeout msec="90000">
-        <SubTree ID="HeadingOut_and_Gate"
-                 role="{role}"
-                 gate_side="{gate_side}"
-                 coin_flip_heading="{coin_flip_heading}"
-                 coin_flip_role="{coin_flip_role}"
-                 gate_heading="{gate_heading}"/>
-      </Timeout>
-
-      <!-- ══ PHASE 2: Slalom (path marker from gate) ══ -->
-      <ForceSuccess>
-        <Timeout msec="90000">
-          <SubTree ID="AvoidDebris_Slalom"
-                   gate_side="{gate_side}"/>
-        </Timeout>
-      </ForceSuccess>
-
-      <!-- ══ PHASE 3: Recon / Bins (path marker from slalom) ══ -->
-      <ForceSuccess>
-        <Timeout msec="90000">
-          <SubTree ID="Recon_Bins"
-                   role="{role}"
-                   marker_dropped="{marker_dropped}"/>
-        </Timeout>
-      </ForceSuccess>
-
-      <!-- ══ PHASE 4: Deploy / Torpedoes (pinger) ══ -->
-      <ForceSuccess>
-        <Timeout msec="120000">
-          <SubTree ID="Deploy_Torpedoes"
-                   role="{role}"
-                   torpedo_fired="{torpedo_fired}"/>
-        </Timeout>
-      </ForceSuccess>
-
-      <!-- ══ PHASE 5: Resupply / Octagon (pinger) ══ -->
-      <ForceSuccess>
-        <Timeout msec="180000">
-          <SubTree ID="Resupply_Octagon"
-                   role="{role}"
-                   inside_octagon="{inside_octagon}"
-                   objects_placed="{objects_placed}"/>
-        </Timeout>
-      </ForceSuccess>
-
-      <!-- ══ PHASE 6: Return Home ══ -->
-      <ForceSuccess>
-        <Timeout msec="90000">
-          <SubTree ID="ReturnHome"
-                   gate_heading="{gate_heading}"/>
-        </Timeout>
-      </ForceSuccess>
-
-    </Sequence>
-  </BehaviorTree>
-
-
-  <!-- ════════════════════════════════════════════════════════════════
-       HEADING OUT + GATE — "Begin Assessment"
-       ════════════════════════════════════════════════════════════════
-       Gate: 120 in x 60 in PVC, RED/BLACK panels.
-         Right side: RED upper, BLACK lower
-         Left side: BLACK upper, RED lower
-       RED divider splits gate in half.
-         One side: compass/hammer_pick (Survey & Repair)
-         Other side: ring_buoy/SOS (Search & Rescue)
-       AUV chooses role by passing under the corresponding side.
-
-       Coin flip (heading): Heads=parallel, Tails=backward
-       Coin flip (role): if visual indicator unavailable
-
-       Style: 90° orientation changes. Roll/Pitch > Yaw.
-       Must not touch gate sides. Divider/images ok.
-       Must maintain active control (not drifting).
-  -->
-  <BehaviorTree ID="HeadingOut_and_Gate">
-    <Sequence>
-
-      <!-- Start on surface, submerge before leaving start zone -->
-      <Submerge target_depth="1.2"/>
-
-      <!-- Coin flip heading: if tails, facing away → rotate 180 -->
-      <Fallback>
-        <Precondition if=" coin_flip_heading != 'tails' " else="FAILURE">
-          <AlwaysSuccess/>
-        </Precondition>
-        <Turn degrees="180"/>
-      </Fallback>
-
-      <!-- Scan for gate with 90° rotations -->
-      <RetryUntilSuccessful num_attempts="4">
-        <Fallback>
-          <Detect_gate result="{gate_det}"/>
-          <Sequence>
-            <Turn degrees="90"/>
-            <Wait msec="400"/>
-          </Sequence>
-        </Fallback>
-      </RetryUntilSuccessful>
-
-      <Align_to detection="{gate_det}"/>
-
-      <!-- Identify role icons on gate → determine which side to pass -->
-      <Fallback>
-        <Sequence>
-          <Detect_role_icons survey_side="{survey_side}"
-                             rescue_side="{rescue_side}"
-                             conf="{det_conf}"/>
-          <Precondition if=" det_conf > 0.55 " else="FAILURE">
-            <AlwaysSuccess/>
-          </Precondition>
-          <!-- Choose role: default to Survey & Repair -->
-          <Fallback>
-            <Sequence>
-              <Precondition if=" coin_flip_role == 'survey' " else="FAILURE">
-                <AlwaysSuccess/>
-              </Precondition>
-              <SetBlackboard output_key="role" value="survey_repair"/>
-              <SetBlackboard output_key="gate_side" value="{survey_side}"/>
-            </Sequence>
-            <Sequence>
-              <Precondition if=" coin_flip_role == 'rescue' " else="FAILURE">
-                <AlwaysSuccess/>
-              </Precondition>
-              <SetBlackboard output_key="role" value="search_rescue"/>
-              <SetBlackboard output_key="gate_side" value="{rescue_side}"/>
-            </Sequence>
-            <!-- Default: Survey & Repair -->
-            <Sequence>
-              <SetBlackboard output_key="role" value="survey_repair"/>
-              <SetBlackboard output_key="gate_side" value="{survey_side}"/>
-            </Sequence>
-          </Fallback>
-        </Sequence>
-        <!-- Fallback: can't see icons, default Survey & Repair, right side -->
-        <Sequence>
-          <SetBlackboard output_key="role" value="survey_repair"/>
-          <SetBlackboard output_key="gate_side" value="R"/>
-        </Sequence>
-      </Fallback>
-
-      <!-- Position on chosen side of gate -->
-      <Reposition_to_gate_side side="{gate_side}"/>
-
-      <!-- Record heading BEFORE style attempt -->
-      <Record_heading heading="{gate_heading}"/>
-
-      <!-- Style attempt: barrel roll for Roll/Pitch points (worth more than Yaw) -->
-      <Fallback>
-        <Sequence>
-          <ForceSuccess>
-            <Style_through_gate type="barrel_roll" det="{gate_det}"/>
-          </ForceSuccess>
-          <Stabilize msec="1200"/>
-        </Sequence>
-        <Move_through_gate/>
-      </Fallback>
-
-      <Recalibrate_nav/>
-
-    </Sequence>
-  </BehaviorTree>
-
-
-  <!-- ════════════════════════════════════════════════════════════════
-       AVOID DEBRIS — Slalom
-       ════════════════════════════════════════════════════════════════
-       3 sets of RED and WHITE PVC pipes (1 in, 3 ft tall).
-       Arrangement: WHITE left, RED middle, WHITE right.
-       More points for:
-         - Same side of red pipe as gate passage
-         - Staying within pipe depth (not above/below)
-       Path marker (ORANGE) at gate points to slalom.
-  -->
-  <BehaviorTree ID="AvoidDebris_Slalom">
-    <Sequence>
-
-      <!-- Follow orange path marker from gate to slalom -->
-      <Fallback>
-        <Sequence>
-          <Detect_path_marker color="orange" result="{path_det}"/>
-          <Follow_path detection="{path_det}"/>
-        </Sequence>
-        <Navigate_to waypoint="slalom_start"/>
-      </Fallback>
-
-      <!-- Adjust depth to be within pipe range (pipes are 3ft/0.9m tall) -->
-      <Submerge target_depth="1.4"/>
-
-      <!-- Navigate 3 sets of pipes -->
-      <Repeat num_cycles="3">
-        <ForceSuccess>
-          <Sequence>
-            <RetryUntilSuccessful num_attempts="3">
-              <Detect_slalom_pipes result="{pipe_det}"/>
-            </RetryUntilSuccessful>
-            <!-- gate_side determines which side of red pipe to pass -->
-            <Compute_slalom_path side="{gate_side}"
-                                  pipes="{pipe_det}"
-                                  waypoint="{slalom_wp}"/>
-            <Navigate_to waypoint="{slalom_wp}"/>
-            <!-- Stay within pipe depth for bonus -->
-            <Hold_depth target="1.4" tol="0.2"/>
-          </Sequence>
-        </ForceSuccess>
-      </Repeat>
-
-    </Sequence>
-  </BehaviorTree>
-
-
-  <!-- ════════════════════════════════════════════════════════════════
-       RECON — Bins
-       ════════════════════════════════════════════════════════════════
-       3D pipeline with 4 bins (2 per role).
-       Inside bins: fire (Survey & Repair) or blood (Search & Rescue).
-       Near each bin: light + magnetic detector.
-       Light starts ON → turn off for points.
-       Drop up to 2 markers. More points for correct role bins.
-       Path marker (ORANGE) from slalom points here.
-  -->
-  <BehaviorTree ID="Recon_Bins">
-    <Sequence>
-
-      <!-- Follow orange path marker from slalom to bins -->
-      <Fallback>
-        <Sequence>
-          <Detect_path_marker color="orange" result="{path_det}"/>
-          <Follow_path detection="{path_det}"/>
-        </Sequence>
-        <Navigate_to waypoint="bins_area"/>
-      </Fallback>
-
-      <!-- Detect bins and identify which are for our role -->
-      <RetryUntilSuccessful num_attempts="3">
-        <Detect_bins result="{bin_det}" role="{role}"
-                     correct_bins="{correct_bins}"/>
-      </RetryUntilSuccessful>
-
-      <!-- Marker 1: drop in correct role bin -->
-      <Sequence>
-        <Align_above target="{correct_bins}" bin_index="0"/>
-        <Stabilize msec="800"/>
-        <Drop_marker id="1"/>
-        <SetBlackboard output_key="marker_dropped" value="true"/>
-      </Sequence>
-
-      <!-- Marker 2: drop in second correct role bin -->
-      <ForceSuccess>
-        <Sequence>
-          <Align_above target="{correct_bins}" bin_index="1"/>
-          <Stabilize msec="800"/>
-          <Drop_marker id="2"/>
-        </Sequence>
-      </ForceSuccess>
-
-      <!-- Bonus: interact with magnetic detector to turn off light -->
-      <ForceSuccess>
-        <Sequence>
-          <Detect_magnetic_detector result="{mag_det}"/>
-          <Approach_and_interact target="{mag_det}"/>
-        </Sequence>
-      </ForceSuccess>
-
-    </Sequence>
-  </BehaviorTree>
-
-
-  <!-- ════════════════════════════════════════════════════════════════
-       DEPLOY — Torpedoes
-       ════════════════════════════════════════════════════════════════
-       Pinger-guided (no path marker).
-       Board: 2 ft x 2 ft. Two openings (large + small).
-       Survey & Repair: fire (large) / fire_engine (small)
-       Search & Rescue: blood (large) / ambulance (small)
-       Sequence bonus: large opening first, then small.
-       Distance bonus: far (1 ft), farther (1.5 ft).
-       Partial points for torpedo touching board.
-  -->
-  <BehaviorTree ID="Deploy_Torpedoes">
-    <Sequence>
-
-      <!-- Navigate using pinger -->
-      <Fallback>
-        <Sequence>
-          <Detect_pinger freq_min="25000" freq_max="40000"
-                         bearing="{ping_bearing}"/>
-          <Navigate_to_bearing bearing="{ping_bearing}" stop_dist="2.0"/>
-        </Sequence>
-        <Navigate_to waypoint="torpedoes_est"/>
-      </Fallback>
-
-      <!-- Detect torpedo board -->
-      <RetryUntilSuccessful num_attempts="3">
-        <Detect_torpedo_board role="{role}" result="{board_det}"
-                              large_opening="{large_open}"
-                              small_opening="{small_open}"/>
-      </RetryUntilSuccessful>
-      <Align_to detection="{board_det}"/>
-
-      <!-- Back off for distance bonus (farther = 1.5 ft / 0.45m) -->
-      <ForceSuccess>
-        <Set_firing_distance dist="0.45"/>
-      </ForceSuccess>
-
-      <!-- Torpedo 1: large opening first (sequence bonus) -->
-      <ForceSuccess>
-        <Sequence>
-          <Align_to_opening opening="{large_open}"/>
-          <Fire_torpedo tube="1"/>
-          <SetBlackboard output_key="torpedo_fired" value="true"/>
-        </Sequence>
-      </ForceSuccess>
-
-      <!-- Torpedo 2: small opening (completes sequence) -->
-      <ForceSuccess>
-        <Sequence>
-          <Align_to_opening opening="{small_open}"/>
-          <Fire_torpedo tube="2"/>
-        </Sequence>
-      </ForceSuccess>
-
-    </Sequence>
-  </BehaviorTree>
-
-
-  <!-- ════════════════════════════════════════════════════════════════
-       RESUPPLY — Octagon
-       ════════════════════════════════════════════════════════════════
-       9 ft (2.7m) diameter octagon on surface. Pinger at center.
-       Hanging inward: compass, hammer_pick, ring_buoy, SOS images.
-       Table at center with role-specific items:
-         Survey & Repair: nut_and_bolt + electric_plug
-         Search & Rescue: pill + adhesive_bandage
-       Baskets on opposite edges:
-         Survey basket: warning sign at bottom
-         Rescue basket: helmet_with_cross at bottom
-
-       Scoring:
-         - Surface inside octagon
-         - Surface with item
-         - Face correct image (depends on items in basket):
-           * 1 item → compass (Survey) / ring_buoy (Rescue)
-           * 2+ items → hammer_pick (Survey) / SOS (Rescue)
-         - Place items in correct basket
-         - Rotation bonus: N turns = N items in basket
-
-       CRITICAL: surfacing outside octagon = run over!
-       Can re-submerge after surfacing to continue.
-  -->
-  <BehaviorTree ID="Resupply_Octagon">
-    <Sequence>
-
-      <!-- Navigate using pinger → vision → dead reckoning -->
-      <Fallback>
-        <Sequence>
-          <Detect_pinger freq_min="25000" freq_max="40000"
-                         bearing="{ping_bearing}"/>
-          <Navigate_to_bearing bearing="{ping_bearing}" stop_dist="1.5"/>
-        </Sequence>
-        <Sequence>
-          <Detect_octagon_below result="{oct_det}"/>
-          <Center_beneath target="{oct_det}"/>
-        </Sequence>
-        <Navigate_to waypoint="octagon_est"/>
-      </Fallback>
-
-      <!-- Confirm we're under the octagon -->
-      <RetryUntilSuccessful num_attempts="3">
-        <Sequence>
-          <Detect_octagon_below result="{oct_det}"/>
-          <Center_beneath target="{oct_det}"/>
-          <Confirm_overhead is_inside="{inside_octagon}"/>
-        </Sequence>
-      </RetryUntilSuccessful>
-
-      <!-- SURFACE inside octagon (critical — do not surface elsewhere!) -->
-      <Surface_in_octagon/>
-
-      <!-- Face correct image for 0 items (initial surface) -->
-      <ForceSuccess>
-        <Sequence>
-          <Determine_face_image role="{role}" items_count="0"
-                                target_image="{face_target}"/>
-          <RetryUntilSuccessful num_attempts="4">
-            <Fallback>
-              <Detect_hanging_image target="{face_target}"
-                                     dir="{image_dir}"/>
-              <Sequence><Turn degrees="90"/><Wait msec="300"/></Sequence>
-            </Fallback>
-          </RetryUntilSuccessful>
-          <Face_direction dir="{image_dir}"/>
-          <Wait msec="2500"/>
-        </Sequence>
-      </ForceSuccess>
-
-      <!-- Item pickup loop: grab items, place in correct basket -->
-      <ForceSuccess>
-        <Repeat num_cycles="2">
-          <ForceSuccess>
-            <Sequence>
-              <!-- Re-submerge to grab item from table -->
-              <Submerge target_depth="1.0"/>
-
-              <RetryUntilSuccessful num_attempts="2">
-                <Sequence>
-                  <Detect_table_item role="{role}"
-                                     result="{item_det}"
-                                     item_type="{item_type}"/>
-                  <Align_to detection="{item_det}"/>
-                  <Grab_object/>
-                </Sequence>
-              </RetryUntilSuccessful>
-
-              <!-- Confirm still inside octagon before surfacing -->
-              <Confirm_overhead is_inside="{inside_octagon}"/>
-              <Surface_in_octagon/>
-
-              <!-- Place item in correct basket based on role -->
-              <Determine_basket role="{role}" item_type="{item_type}"
-                                basket="{target_basket}"/>
-              <Align_to_basket basket="{target_basket}"/>
-              <Release_object/>
-              <Increment key="objects_placed" current_val="{objects_placed}" new_val="{objects_placed}"/>
-
-              <!-- Face correct image based on items placed so far -->
-              <ForceSuccess>
-                <Sequence>
-                  <Determine_face_image role="{role}"
-                                        items_count="{objects_placed}"
-                                        target_image="{face_target}"/>
-                  <RetryUntilSuccessful num_attempts="4">
-                    <Fallback>
-                      <Detect_hanging_image target="{face_target}"
-                                             dir="{image_dir}"/>
-                      <Sequence><Turn degrees="90"/><Wait msec="300"/></Sequence>
-                    </Fallback>
-                  </RetryUntilSuccessful>
-                  <Face_direction dir="{image_dir}"/>
-                  <Wait msec="2000"/>
-                </Sequence>
-              </ForceSuccess>
-
-            </Sequence>
-          </ForceSuccess>
-        </Repeat>
-      </ForceSuccess>
-
-      <!-- Rotation bonus: rotate N times = objects placed -->
-      <ForceSuccess>
-        <Precondition if=" objects_placed > 0 " else="FAILURE">
-          <Rotation_bonus count="{objects_placed}"/>
-        </Precondition>
-      </ForceSuccess>
-
-      <!-- Re-submerge to continue mission -->
-      <SetBlackboard output_key="inside_octagon" value="false"/>
-      <Submerge target_depth="1.2"/>
-
-    </Sequence>
-  </BehaviorTree>
-
-
-  <!-- ════════════════════════════════════════════════════════════════
-       RETURN HOME
-       ════════════════════════════════════════════════════════════════
-       While UNDERWATER, pass back through the start gate.
-  -->
-  <BehaviorTree ID="ReturnHome">
-    <Sequence>
-
-      <Submerge target_depth="1.2"/>
-
-      <Compute_reverse_heading gate_heading="{gate_heading}"
-                                result="{return_heading}"/>
-
-      <Navigate_on_heading heading="{return_heading}" dist="20.0"/>
-
-      <RetryUntilSuccessful num_attempts="3">
-        <Fallback>
-          <Detect_gate result="{gate_det}"/>
-          <Sequence><Turn degrees="30"/><Wait msec="400"/></Sequence>
-        </Fallback>
-      </RetryUntilSuccessful>
-
-      <Align_to detection="{gate_det}"/>
-      <Move_through_gate/>
-
-    </Sequence>
-  </BehaviorTree>
-
-
-  <!-- ════════════════════════════════════════════════════════════════
-       QUALIFICATION RUN
-       Pass through gate autonomously, everything submerged.
-  -->
-  <BehaviorTree ID="QualificationRun">
-    <ReactiveSequence>
-      <SubTree ID="SafetyMonitor"
-               battery_pct="{battery_pct}" leak_detected="{leak_detected}"
-               depth="{depth}" start_time="{start_time}"
-               inside_octagon="{inside_octagon}"/>
-      <Sequence>
-        <Submerge target_depth="1.0"/>
-        <RetryUntilSuccessful num_attempts="4">
-          <Fallback>
-            <Detect_gate result="{gate_det}"/>
-            <Sequence><Turn degrees="90"/><Wait msec="400"/></Sequence>
-          </Fallback>
-        </RetryUntilSuccessful>
-        <Align_to detection="{gate_det}"/>
-        <Move_through_gate/>
-      </Sequence>
-    </ReactiveSequence>
-  </BehaviorTree>
-
-
-  <!-- ════════════════════════════════════════════════════════════════
-       NODE MODEL (Groot2 compatibility)
-  -->
   <TreeNodesModel>
 
-    <!-- ── Conditions ── -->
-    <Condition ID="IsBatteryOk">
-      <input_port name="min_pct" default="20"/><input_port name="battery_pct"/>
+    <!-- ── SubTrees ──────────────────────────────────────────────────── -->
+    <SubTree ID="InitializeSystems"/>
+    <SubTree ID="HeadingOutAndGate"/>
+    <SubTree ID="SlalomTask"/>
+    <SubTree ID="ReconBinsTask"/>
+    <SubTree ID="DeployTorpedoesTask"/>
+    <SubTree ID="ResupplyOctagonTask"/>
+    <SubTree ID="ReturnHomeTask"/>
+    <SubTree ID="GlobalRecovery"/>
+
+    <SubTree ID="DetermineStartOrientation"/>
+    <SubTree ID="StabilizeVehicle"/>
+    <SubTree ID="SearchForGate"/>
+    <SubTree ID="ApproachGate"/>
+    <SubTree ID="DetermineRole"/>
+    <SubTree ID="ExecuteStyleManeuver"/>
+    <SubTree ID="PassThroughGate"/>
+    <SubTree ID="ExitGate"/>
+
+    <SubTree ID="DetermineSlalomSide"/>
+    <SubTree ID="NavigateSlalomSet"/>
+
+    <SubTree ID="IdentifyRoleBins"/>
+    <SubTree ID="DropMarker"/>
+    <SubTree ID="MagneticInteraction"/>
+
+    <SubTree ID="AlignLargeOpening"/>
+    <SubTree ID="AlignSmallOpening"/>
+    <SubTree ID="AlignOpening"/>
+    <SubTree ID="FireTorpedo"/>
+
+    <SubTree ID="SurfaceInsideOctagon"/>
+    <SubTree ID="PickupObject"/>
+    <SubTree ID="DeliverObject"/>
+    <SubTree ID="FaceCorrectIcon"/>
+    <SubTree ID="ExecuteRotationBonus"/>
+
+    <!-- ── Conditions ────────────────────────────────────────────────── -->
+    <Condition ID="CoinflipNormal"/>
+    <Condition ID="CoinflipBackward"/>
+    <Condition ID="LocalizationStable"/>
+    <Condition ID="GateDetected"/>
+    <Condition ID="GateSearchTimeout">
+      <input_port name="timeout_sec" default="30" type="double"/>
     </Condition>
-    <Condition ID="IsLeakDetected"><input_port name="leak"/></Condition>
-    <Condition ID="IsDepthSafe">
-      <input_port name="max_depth" default="1.9"/>
-      <input_port name="min_depth" default="0.0"/>
-      <input_port name="depth"/>
+    <Condition ID="RoleSignsVisible"/>
+    <Condition ID="SurveyRepairDetected"/>
+    <Condition ID="SearchRescueDetected"/>
+    <Condition ID="RandomRoleAssignment"/>
+    <Condition ID="StyleModeEnabled"/>
+    <Condition ID="VehicleStable"/>
+    <Condition ID="OrientationReached"/>
+    <Condition ID="DividerVerified"/>
+    <Condition ID="NoCollisionRisk"/>
+    <Condition ID="GateCleared"/>
+    <Condition ID="GateRedRight"/>
+    <Condition ID="GateRedLeft"/>
+    <Condition ID="PlaneCrossed"/>
+    <Condition ID="InsideBounds"/>
+    <Condition ID="RoleSurveyRepair"/>
+    <Condition ID="RoleSearchRescue"/>
+    <Condition ID="ValidDropAltitude">
+      <input_port name="min_altitude_m" default="0.3" type="double"/>
     </Condition>
-    <Condition ID="IsInsideOctagon"><input_port name="val"/></Condition>
-    <Condition ID="IsTimeRemaining">
-      <input_port name="min_sec" default="30"/><input_port name="start_time"/>
+    <Condition ID="MarkerInBin"/>
+    <Condition ID="MarkersRemaining"/>
+    <Condition ID="LightOff"/>
+    <Condition ID="AlignmentConfirmed"/>
+    <Condition ID="TorpedoHit"/>
+    <Condition ID="TorpedoesRemaining"/>
+    <Condition ID="InsideOctagon"/>
+    <Condition ID="CorrectBasket"/>
+    <Condition ID="ObjectDelivered"/>
+    <Condition ID="OneItemInBasket"/>
+    <Condition ID="TwoItemsInBasket"/>
+    <Condition ID="MissionFinished"/>
+    <Condition ID="LocalizationLost"/>
+    <Condition ID="DepthUnstable"/>
+    <Condition ID="ObstacleDetected"/>
+    <Condition ID="TaskTimeout">
+      <input_port name="timeout_sec" default="120" type="double"/>
     </Condition>
-    <Condition ID="AlwaysSuccess"/>
+    <Condition ID="CriticalFailure"/>
 
-    <!-- ── Movement Actions ── -->
-    <Action ID="EmergencySurface"><input_port name="reason"/></Action>
-    <Action ID="Submerge"><input_port name="target_depth" default="1.2"/></Action>
-    <Action ID="AscendTo"><input_port name="target_depth"/></Action>
-    <Action ID="Turn"><input_port name="degrees"/></Action>
-    <Action ID="Wait"><input_port name="msec"/></Action>
-    <Action ID="Stabilize"><input_port name="msec" default="1000"/></Action>
-    <Action ID="Navigate_to"><input_port name="waypoint"/></Action>
-    <Action ID="Navigate_to_bearing">
-      <input_port name="bearing"/><input_port name="stop_dist" default="1.0"/>
+    <!-- ── Actions – Initialization ──────────────────────────────────── -->
+    <Action ID="VerifyThrusters"/>
+    <Action ID="VerifyIMU"/>
+    <Action ID="VerifyDepthSensor"/>
+    <Action ID="VerifyCameras"/>
+    <Action ID="VerifyManipulators"/>
+    <Action ID="VerifyTorpedoLauncher"/>
+    <Action ID="LoadMissionParameters"/>
+    <Action ID="ZeroStateEstimator"/>
+    <Action ID="WaitForStartSignal"/>
+    <Action ID="SubmergeToMissionDepth">
+      <input_port name="depth_m" default="1.5" type="double"/>
     </Action>
-    <Action ID="Navigate_on_heading">
-      <input_port name="heading"/><input_port name="dist"/>
-    </Action>
-    <Action ID="Move_through_gate"/>
-    <Action ID="Reposition_to_gate_side"><input_port name="side"/></Action>
-    <Action ID="Record_heading"><output_port name="heading"/></Action>
-    <Action ID="Recalibrate_nav"/>
-    <Action ID="Hold_depth">
-      <input_port name="target"/><input_port name="tol" default="0.2"/>
-    </Action>
-    <Action ID="Surface_in_octagon"/>
-    <Action ID="Face_direction"><input_port name="dir"/></Action>
-    <Action ID="Follow_path"><input_port name="detection"/></Action>
-    <Action ID="Compute_reverse_heading">
-      <input_port name="gate_heading"/><output_port name="result"/>
-    </Action>
-    <Action ID="Set_firing_distance"><input_port name="dist"/></Action>
 
-    <!-- ── Detection Actions ── -->
-    <Action ID="Detect_gate"><output_port name="result"/></Action>
-    <Action ID="Detect_role_icons">
-      <output_port name="survey_side"/>
-      <output_port name="rescue_side"/>
-      <output_port name="conf"/>
+    <!-- ── Actions – Gate ────────────────────────────────────────────── -->
+    <Action ID="FaceGateEstimate"/>
+    <Action ID="ContinueMission"/>
+    <Action ID="SearchGateReverse"/>
+    <Action ID="Rotate180"/>
+    <Action ID="HoldDepth">
+      <input_port name="depth_m" type="double"/>
     </Action>
-    <Action ID="Detect_pinger">
-      <input_port name="freq_min"/><input_port name="freq_max"/>
-      <output_port name="bearing"/>
+    <Action ID="HoldRoll"/>
+    <Action ID="HoldPitch"/>
+    <Action ID="HoldHeading">
+      <input_port name="heading_deg" type="double"/>
     </Action>
-    <Action ID="Detect_octagon_below"><output_port name="result"/></Action>
-    <Action ID="Confirm_overhead"><output_port name="is_inside"/></Action>
-    <Action ID="Detect_bins">
-      <output_port name="result"/><input_port name="role"/>
-      <output_port name="correct_bins"/>
+    <Action ID="EnableFrontCamera"/>
+    <Action ID="LockGateTarget"/>
+    <Action ID="YawSweep">
+      <input_port name="sweep_deg" default="30" type="double"/>
     </Action>
-    <Action ID="Detect_slalom_pipes"><output_port name="result"/></Action>
-    <Action ID="Detect_torpedo_board">
-      <input_port name="role"/><output_port name="result"/>
-      <output_port name="large_opening"/>
-      <output_port name="small_opening"/>
+    <Action ID="ForwardSpiral"/>
+    <Action ID="DepthModulation"/>
+    <Action ID="DeadReckonForward">
+      <input_port name="distance_m" default="2.0" type="double"/>
     </Action>
-    <Action ID="Detect_path_marker">
-      <input_port name="color"/><output_port name="result"/>
+    <Action ID="RetryGateSearch"/>
+    <Action ID="AlignGateCenter"/>
+    <Action ID="EstimateGateDivider"/>
+    <Action ID="EstimateGateOpening"/>
+    <Action ID="MaintainCenterline"/>
+    <Action ID="MaintainDesiredDepth"/>
+    <Action ID="ReduceVelocity">
+      <input_port name="target_speed_mps" default="0.3" type="double"/>
     </Action>
-    <Action ID="Detect_hanging_image">
-      <input_port name="target"/><output_port name="dir"/>
+    <Action ID="SetRoleSurveyRepair"/>
+    <Action ID="SelectSurveyRepairGateSide"/>
+    <Action ID="SetRoleSearchRescue"/>
+    <Action ID="SelectSearchRescueGateSide"/>
+    <Action ID="ReadAssignedRole"/>
+    <Action ID="StoreRoleVariable"/>
+    <Action ID="Yaw90"/>
+    <Action ID="Roll90"/>
+    <Action ID="Pitch90"/>
+    <Action ID="ExecuteStyle"/>
+    <Action ID="SkipStyle"/>
+    <Action ID="OffsetToSelectedSide"/>
+    <Action ID="MaintainGateClearance"/>
+    <Action ID="ForwardTransit"/>
+    <Action ID="StopMotion"/>
+    <Action ID="RecenterVehicle"/>
+    <Action ID="RetryGateTransit"/>
+    <Action ID="RecordGateSide"/>
+    <Action ID="MoveForward">
+      <input_port name="distance_m" default="1.0" type="double"/>
     </Action>
-    <Action ID="Detect_table_item">
-      <input_port name="role"/><output_port name="result"/>
-      <output_port name="item_type"/>
-    </Action>
-    <Action ID="Detect_magnetic_detector"><output_port name="result"/></Action>
+    <Action ID="ReestablishHeading"/>
+    <Action ID="SearchPathMarker"/>
 
-    <!-- ── Alignment / Positioning ── -->
-    <Action ID="Align_to"><input_port name="detection"/></Action>
-    <Action ID="Align_above">
-      <input_port name="target"/><input_port name="bin_index"/>
-    </Action>
-    <Action ID="Align_to_opening"><input_port name="opening"/></Action>
-    <Action ID="Align_to_basket"><input_port name="basket"/></Action>
-    <Action ID="Center_beneath"><input_port name="target"/></Action>
-    <Action ID="Approach_and_interact"><input_port name="target"/></Action>
+    <!-- ── Actions – Slalom ──────────────────────────────────────────── -->
+    <Action ID="DetectOrangePath"/>
+    <Action ID="FollowPath"/>
+    <Action ID="SearchSlalomPoles"/>
+    <Action ID="KeepRedPoleRight"/>
+    <Action ID="KeepRedPoleLeft"/>
+    <Action ID="ExitSlalom"/>
+    <Action ID="DetectPoleGroup"/>
+    <Action ID="EstimateGap"/>
+    <Action ID="AlignThroughGap"/>
+    <Action ID="MaintainSlalomDepth"/>
+    <Action ID="TransitGap"/>
+    <Action ID="CorrectHeading"/>
+    <Action ID="ReenterSlalom"/>
 
-    <!-- ── Manipulation Actions ── -->
-    <Action ID="Grab_object"/>
-    <Action ID="Release_object"/>
-    <Action ID="Drop_marker"><input_port name="id"/></Action>
-    <Action ID="Fire_torpedo"><input_port name="tube"/></Action>
+    <!-- ── Actions – Bins ────────────────────────────────────────────── -->
+    <Action ID="FollowPathMarker"/>
+    <Action ID="SearchPipeline"/>
+    <Action ID="SearchFireBins"/>
+    <Action ID="SearchBloodBins"/>
+    <Action ID="NavigateBin1"/>
+    <Action ID="NavigateBin2"/>
+    <Action ID="StationKeep"/>
+    <Action ID="EstimateBinCenter"/>
+    <Action ID="ReleaseMarker"/>
+    <Action ID="ObserveMarker"/>
+    <Action ID="RetryMarkerDrop"/>
+    <Action ID="DetectMagneticTarget"/>
+    <Action ID="AlignInteractionTool"/>
+    <Action ID="MoveToInteractionDistance">
+      <input_port name="distance_m" default="0.1" type="double"/>
+    </Action>
+    <Action ID="ActivateTool"/>
+    <Action ID="RetryInteraction"/>
+    <Action ID="TimeoutRecovery"/>
 
-    <!-- ── Style / Bonus Actions ── -->
-    <Action ID="Style_through_gate">
-      <input_port name="type" default="barrel_roll"/>
-      <input_port name="det"/>
+    <!-- ── Actions – Torpedoes ───────────────────────────────────────── -->
+    <Action ID="SearchTargetBoard"/>
+    <Action ID="IdentifyRoleBoard"/>
+    <Action ID="DetectLargeOpening"/>
+    <Action ID="DetectSmallOpening"/>
+    <Action ID="EstimateRange"/>
+    <Action ID="EstimateOffset"/>
+    <Action ID="HoldPosition"/>
+    <Action ID="CorrectAim"/>
+    <Action ID="ArmLauncher">
+      <input_port name="tube_id" default="1" type="int"/>
     </Action>
-    <Action ID="Determine_basket">
-      <input_port name="role"/><input_port name="item_type"/>
-      <output_port name="basket"/>
+    <Action ID="LaunchTorpedo"/>
+    <Action ID="ObserveResult"/>
+    <Action ID="RealignVehicle"/>
+    <Action ID="RetryShot"/>
+
+    <!-- ── Actions – Octagon ─────────────────────────────────────────── -->
+    <Action ID="NavigateToOctagon"/>
+    <Action ID="DetectOctagon"/>
+    <Action ID="EnterOctagon"/>
+    <Action ID="EstimateOctagonCenter"/>
+    <Action ID="AscendSlowly">
+      <input_port name="speed_mps" default="0.1" type="double"/>
     </Action>
-    <Action ID="Determine_face_image">
-      <input_port name="role"/><input_port name="items_count"/>
-      <output_port name="target_image"/>
+    <Action ID="BreakSurface"/>
+    <Action ID="MaintainPosition"/>
+    <Action ID="DescendSlightly">
+      <input_port name="delta_m" default="0.3" type="double"/>
     </Action>
-    <Action ID="Compute_slalom_path">
-      <input_port name="side"/><input_port name="pipes"/>
-      <output_port name="waypoint"/>
+    <Action ID="SearchRepairObjects"/>
+    <Action ID="SearchMedicalObjects"/>
+    <Action ID="NavigateBasket"/>
+    <Action ID="HoldStation"/>
+    <Action ID="ReleaseObject"/>
+    <Action ID="FaceCompassOrRing"/>
+    <Action ID="FaceHammerOrSOS"/>
+    <Action ID="CalculateRotationCount"/>
+    <Action ID="ExecuteYawRotation">
+      <input_port name="rotation_count" type="int"/>
     </Action>
-    <Action ID="Rotation_bonus"><input_port name="count"/></Action>
-    <Action ID="Increment">
-      <input_port name="key"/><input_port name="current_val"/><output_port name="new_val"/>
-    </Action>
-    <Action ID="SetBlackboard">
-      <input_port name="output_key"/><input_port name="value"/>
-    </Action>
+
+    <!-- ── Actions – Return / Recovery ──────────────────────────────── -->
+    <Action ID="NavigateToStart"/>
+    <Action ID="SearchStartGate"/>
+    <Action ID="AlignStartGate"/>
+    <Action ID="TransitStartGate"/>
+    <Action ID="Surface"/>
+    <Action ID="MissionComplete"/>
+    <Action ID="StopVehicle"/>
+    <Action ID="Relocalize"/>
+    <Action ID="RecoverDepth"/>
+    <Action ID="BackAway"/>
+    <Action ID="ReplanPath"/>
+    <Action ID="SkipTask"/>
+    <Action ID="AbortMission"/>
+    <Action ID="SurfaceSafely"/>
+    <Action ID="TransmitStatus"/>
 
   </TreeNodesModel>
+
+  <!-- ═══════════════════════════════════════════════════════════════════
+       MAIN TREE
+       ═══════════════════════════════════════════════════════════════════ -->
+
+  <BehaviorTree ID="MainTree">
+    <Sequence name="MissionSequence">
+      <SubTree ID="InitializeSystems"/>
+      <SubTree ID="HeadingOutAndGate"/>
+      <SubTree ID="SlalomTask"/>
+      <SubTree ID="ReconBinsTask"/>
+      <SubTree ID="DeployTorpedoesTask"/>
+      <SubTree ID="ResupplyOctagonTask"/>
+      <SubTree ID="ReturnHomeTask"/>
+      <Action ID="Surface"/>
+      <Action ID="MissionComplete"/>
+    </Sequence>
+  </BehaviorTree>
+
+  <!-- ═══════════════════════════════════════════════════════════════════
+       INITIALIZATION
+       ═══════════════════════════════════════════════════════════════════ -->
+
+  <BehaviorTree ID="InitializeSystems">
+    <Sequence name="InitializeSequence">
+      <Action ID="VerifyThrusters"/>
+      <Action ID="VerifyIMU"/>
+      <Action ID="VerifyDepthSensor"/>
+      <Action ID="VerifyCameras"/>
+      <Action ID="VerifyManipulators"/>
+      <Action ID="VerifyTorpedoLauncher"/>
+      <Action ID="LoadMissionParameters"/>
+      <Action ID="ZeroStateEstimator"/>
+      <Action ID="WaitForStartSignal"/>
+      <Action ID="SubmergeToMissionDepth"/>
+    </Sequence>
+  </BehaviorTree>
+
+  <!-- ═══════════════════════════════════════════════════════════════════
+       TASK 1 : HEADING OUT + GATE
+       ═══════════════════════════════════════════════════════════════════ -->
+
+  <BehaviorTree ID="HeadingOutAndGate">
+    <Sequence name="HeadingOutSequence">
+      <SubTree ID="DetermineStartOrientation"/>
+      <SubTree ID="StabilizeVehicle"/>
+      <SubTree ID="SearchForGate"/>
+      <SubTree ID="ApproachGate"/>
+      <SubTree ID="DetermineRole"/>
+      <SubTree ID="ExecuteStyleManeuver"/>
+      <SubTree ID="PassThroughGate"/>
+      <SubTree ID="ExitGate"/>
+    </Sequence>
+  </BehaviorTree>
+
+  <BehaviorTree ID="DetermineStartOrientation">
+    <Fallback name="OrientationSelector">
+      <Sequence name="NormalOrientationSequence">
+        <Condition ID="CoinflipNormal"/>
+        <Action ID="FaceGateEstimate"/>
+        <Action ID="ContinueMission"/>
+      </Sequence>
+      <Sequence name="BackwardOrientationSequence">
+        <Condition ID="CoinflipBackward"/>
+        <Action ID="SearchGateReverse"/>
+        <Action ID="Rotate180"/>
+        <Action ID="ContinueMission"/>
+      </Sequence>
+    </Fallback>
+  </BehaviorTree>
+
+  <BehaviorTree ID="StabilizeVehicle">
+    <Sequence name="StabilizeSequence">
+      <Action ID="HoldDepth"/>
+      <Action ID="HoldRoll"/>
+      <Action ID="HoldPitch"/>
+      <Action ID="HoldHeading"/>
+      <Condition ID="LocalizationStable"/>
+    </Sequence>
+  </BehaviorTree>
+
+  <BehaviorTree ID="SearchForGate">
+    <Fallback name="GateSearchFallback">
+      <Sequence name="GateDetectedSequence">
+        <Action ID="EnableFrontCamera"/>
+        <Condition ID="GateDetected"/>
+        <Action ID="LockGateTarget"/>
+      </Sequence>
+      <Sequence name="GateRecoverySequence">
+        <Action ID="YawSweep"/>
+        <Action ID="ForwardSpiral"/>
+        <Action ID="DepthModulation"/>
+        <Fallback>
+          <Condition ID="GateDetected"/>
+          <Sequence>
+            <Condition ID="GateSearchTimeout"/>
+            <Action ID="DeadReckonForward"/>
+            <Action ID="RetryGateSearch"/>
+          </Sequence>
+        </Fallback>
+      </Sequence>
+    </Fallback>
+  </BehaviorTree>
+
+  <BehaviorTree ID="ApproachGate">
+    <Sequence name="ApproachGateSequence">
+      <Action ID="AlignGateCenter"/>
+      <Action ID="EstimateGateDivider"/>
+      <Action ID="EstimateGateOpening"/>
+      <Action ID="MaintainCenterline"/>
+      <Action ID="MaintainDesiredDepth"/>
+      <Action ID="ReduceVelocity"/>
+    </Sequence>
+  </BehaviorTree>
+
+  <BehaviorTree ID="DetermineRole">
+    <Fallback name="RoleFallback">
+      <Sequence name="VisualRoleSequence">
+        <Condition ID="RoleSignsVisible"/>
+        <Fallback>
+          <Sequence>
+            <Condition ID="SurveyRepairDetected"/>
+            <Action ID="SetRoleSurveyRepair"/>
+            <Action ID="SelectSurveyRepairGateSide"/>
+          </Sequence>
+          <Sequence>
+            <Condition ID="SearchRescueDetected"/>
+            <Action ID="SetRoleSearchRescue"/>
+            <Action ID="SelectSearchRescueGateSide"/>
+          </Sequence>
+        </Fallback>
+      </Sequence>
+      <Sequence name="RandomRoleSequence">
+        <Condition ID="RandomRoleAssignment"/>
+        <Action ID="ReadAssignedRole"/>
+        <Action ID="StoreRoleVariable"/>
+      </Sequence>
+    </Fallback>
+  </BehaviorTree>
+
+  <BehaviorTree ID="ExecuteStyleManeuver">
+    <Fallback name="StyleFallback">
+      <Sequence name="StyleEnabledSequence">
+        <Condition ID="StyleModeEnabled"/>
+        <Fallback>
+          <Action ID="Yaw90"/>
+          <Action ID="Roll90"/>
+          <Action ID="Pitch90"/>
+        </Fallback>
+        <Condition ID="VehicleStable"/>
+        <Action ID="ExecuteStyle"/>
+        <Condition ID="OrientationReached"/>
+      </Sequence>
+      <Action ID="SkipStyle"/>
+    </Fallback>
+  </BehaviorTree>
+
+  <BehaviorTree ID="PassThroughGate">
+    <Sequence name="GateTransitSequence">
+      <Action ID="OffsetToSelectedSide"/>
+      <Condition ID="DividerVerified"/>
+      <Action ID="MaintainGateClearance"/>
+      <Action ID="ForwardTransit"/>
+      <Fallback>
+        <Condition ID="NoCollisionRisk"/>
+        <Sequence>
+          <Action ID="StopMotion"/>
+          <Action ID="RecenterVehicle"/>
+          <Action ID="RetryGateTransit"/>
+        </Sequence>
+      </Fallback>
+      <Action ID="RecordGateSide"/>
+    </Sequence>
+  </BehaviorTree>
+
+  <BehaviorTree ID="ExitGate">
+    <Sequence name="ExitGateSequence">
+      <Action ID="MoveForward"/>
+      <Condition ID="GateCleared"/>
+      <Action ID="ReestablishHeading"/>
+      <Action ID="SearchPathMarker"/>
+    </Sequence>
+  </BehaviorTree>
+
+  <!-- ═══════════════════════════════════════════════════════════════════
+       TASK 2 : SLALOM
+       ═══════════════════════════════════════════════════════════════════ -->
+
+  <BehaviorTree ID="SlalomTask">
+    <Sequence name="SlalomSequence">
+      <Action ID="DetectOrangePath"/>
+      <Action ID="FollowPath"/>
+      <Action ID="SearchSlalomPoles"/>
+      <SubTree ID="DetermineSlalomSide"/>
+      <SubTree ID="NavigateSlalomSet"/>
+      <SubTree ID="NavigateSlalomSet"/>
+      <SubTree ID="NavigateSlalomSet"/>
+      <Action ID="ExitSlalom"/>
+    </Sequence>
+  </BehaviorTree>
+
+  <BehaviorTree ID="DetermineSlalomSide">
+    <Fallback>
+      <Sequence>
+        <Condition ID="GateRedRight"/>
+        <Action ID="KeepRedPoleRight"/>
+      </Sequence>
+      <Sequence>
+        <Condition ID="GateRedLeft"/>
+        <Action ID="KeepRedPoleLeft"/>
+      </Sequence>
+    </Fallback>
+  </BehaviorTree>
+
+  <BehaviorTree ID="NavigateSlalomSet">
+    <Sequence name="SlalomSetSequence">
+      <Action ID="DetectPoleGroup"/>
+      <Action ID="EstimateGap"/>
+      <Action ID="AlignThroughGap"/>
+      <Action ID="MaintainSlalomDepth"/>
+      <Action ID="TransitGap"/>
+      <Condition ID="PlaneCrossed"/>
+      <Fallback>
+        <Condition ID="InsideBounds"/>
+        <Sequence>
+          <Action ID="CorrectHeading"/>
+          <Action ID="ReenterSlalom"/>
+        </Sequence>
+      </Fallback>
+    </Sequence>
+  </BehaviorTree>
+
+  <!-- ═══════════════════════════════════════════════════════════════════
+       TASK 3 : RECON BINS
+       ═══════════════════════════════════════════════════════════════════ -->
+
+  <BehaviorTree ID="ReconBinsTask">
+    <Sequence name="ReconBinsSequence">
+      <Action ID="FollowPathMarker"/>
+      <Action ID="SearchPipeline"/>
+      <SubTree ID="IdentifyRoleBins"/>
+      <Action ID="NavigateBin1"/>
+      <SubTree ID="DropMarker"/>
+      <Action ID="NavigateBin2"/>
+      <SubTree ID="DropMarker"/>
+      <SubTree ID="MagneticInteraction"/>
+    </Sequence>
+  </BehaviorTree>
+
+  <BehaviorTree ID="IdentifyRoleBins">
+    <Fallback>
+      <Sequence>
+        <Condition ID="RoleSurveyRepair"/>
+        <Action ID="SearchFireBins"/>
+      </Sequence>
+      <Sequence>
+        <Condition ID="RoleSearchRescue"/>
+        <Action ID="SearchBloodBins"/>
+      </Sequence>
+    </Fallback>
+  </BehaviorTree>
+
+  <BehaviorTree ID="DropMarker">
+    <Sequence name="DropMarkerSequence">
+      <Action ID="StationKeep"/>
+      <Action ID="EstimateBinCenter"/>
+      <Action ID="ReduceVelocity"/>
+      <Condition ID="ValidDropAltitude"/>
+      <Action ID="ReleaseMarker"/>
+      <Action ID="ObserveMarker"/>
+      <Fallback>
+        <Condition ID="MarkerInBin"/>
+        <Sequence>
+          <Condition ID="MarkersRemaining"/>
+          <Action ID="RetryMarkerDrop"/>
+        </Sequence>
+      </Fallback>
+    </Sequence>
+  </BehaviorTree>
+
+  <BehaviorTree ID="MagneticInteraction">
+    <Sequence name="MagneticInteractionSequence">
+      <Action ID="DetectMagneticTarget"/>
+      <Action ID="AlignInteractionTool"/>
+      <Action ID="MoveToInteractionDistance"/>
+      <Action ID="ActivateTool"/>
+      <Fallback>
+        <Condition ID="LightOff"/>
+        <Sequence>
+          <Action ID="RetryInteraction"/>
+          <Action ID="TimeoutRecovery"/>
+        </Sequence>
+      </Fallback>
+    </Sequence>
+  </BehaviorTree>
+
+  <!-- ═══════════════════════════════════════════════════════════════════
+       TASK 4 : TORPEDOES
+       ═══════════════════════════════════════════════════════════════════ -->
+
+  <BehaviorTree ID="DeployTorpedoesTask">
+    <Sequence name="DeploySequence">
+      <Action ID="SearchTargetBoard"/>
+      <Action ID="IdentifyRoleBoard"/>
+      <SubTree ID="AlignLargeOpening"/>
+      <SubTree ID="FireTorpedo"/>
+      <SubTree ID="AlignSmallOpening"/>
+      <SubTree ID="FireTorpedo"/>
+    </Sequence>
+  </BehaviorTree>
+
+  <BehaviorTree ID="AlignLargeOpening">
+    <Sequence>
+      <Action ID="DetectLargeOpening"/>
+      <SubTree ID="AlignOpening"/>
+    </Sequence>
+  </BehaviorTree>
+
+  <BehaviorTree ID="AlignSmallOpening">
+    <Sequence>
+      <Action ID="DetectSmallOpening"/>
+      <SubTree ID="AlignOpening"/>
+    </Sequence>
+  </BehaviorTree>
+
+  <BehaviorTree ID="AlignOpening">
+    <Sequence name="AlignOpeningSequence">
+      <Action ID="EstimateRange"/>
+      <Action ID="EstimateOffset"/>
+      <Action ID="HoldPosition"/>
+      <Action ID="CorrectAim"/>
+    </Sequence>
+  </BehaviorTree>
+
+  <BehaviorTree ID="FireTorpedo">
+    <Sequence name="FireTorpedoSequence">
+      <Condition ID="AlignmentConfirmed"/>
+      <Condition ID="VehicleStable"/>
+      <Action ID="ArmLauncher"/>
+      <Action ID="LaunchTorpedo"/>
+      <Action ID="ObserveResult"/>
+      <Fallback>
+        <Condition ID="TorpedoHit"/>
+        <Sequence>
+          <Action ID="RealignVehicle"/>
+          <Condition ID="TorpedoesRemaining"/>
+          <Action ID="RetryShot"/>
+        </Sequence>
+      </Fallback>
+    </Sequence>
+  </BehaviorTree>
+
+  <!-- ═══════════════════════════════════════════════════════════════════
+       TASK 5 : OCTAGON
+       ═══════════════════════════════════════════════════════════════════ -->
+
+  <BehaviorTree ID="ResupplyOctagonTask">
+    <Sequence name="OctagonSequence">
+      <Action ID="NavigateToOctagon"/>
+      <Action ID="DetectOctagon"/>
+      <Action ID="EnterOctagon"/>
+      <SubTree ID="SurfaceInsideOctagon"/>
+      <SubTree ID="PickupObject"/>
+      <SubTree ID="DeliverObject"/>
+      <SubTree ID="PickupObject"/>
+      <SubTree ID="DeliverObject"/>
+      <SubTree ID="FaceCorrectIcon"/>
+      <SubTree ID="ExecuteRotationBonus"/>
+    </Sequence>
+  </BehaviorTree>
+
+  <BehaviorTree ID="SurfaceInsideOctagon">
+    <Sequence>
+      <Action ID="EstimateOctagonCenter"/>
+      <Action ID="AscendSlowly"/>
+      <Condition ID="InsideOctagon"/>
+      <Action ID="BreakSurface"/>
+      <Action ID="MaintainPosition"/>
+      <Action ID="DescendSlightly"/>
+    </Sequence>
+  </BehaviorTree>
+
+  <BehaviorTree ID="PickupObject">
+    <Fallback>
+      <Sequence>
+        <Condition ID="RoleSurveyRepair"/>
+        <Action ID="SearchRepairObjects"/>
+      </Sequence>
+      <Sequence>
+        <Condition ID="RoleSearchRescue"/>
+        <Action ID="SearchMedicalObjects"/>
+      </Sequence>
+    </Fallback>
+  </BehaviorTree>
+
+  <BehaviorTree ID="DeliverObject">
+    <Sequence>
+      <Action ID="NavigateBasket"/>
+      <Condition ID="CorrectBasket"/>
+      <Action ID="HoldStation"/>
+      <Action ID="ReleaseObject"/>
+      <Condition ID="ObjectDelivered"/>
+    </Sequence>
+  </BehaviorTree>
+
+  <BehaviorTree ID="FaceCorrectIcon">
+    <Fallback>
+      <Sequence>
+        <Condition ID="OneItemInBasket"/>
+        <Action ID="FaceCompassOrRing"/>
+      </Sequence>
+      <Sequence>
+        <Condition ID="TwoItemsInBasket"/>
+        <Action ID="FaceHammerOrSOS"/>
+      </Sequence>
+    </Fallback>
+  </BehaviorTree>
+
+  <BehaviorTree ID="ExecuteRotationBonus">
+    <Sequence>
+      <Action ID="CalculateRotationCount"/>
+      <Action ID="ExecuteYawRotation"/>
+      <SubTree ID="StabilizeVehicle"/>
+    </Sequence>
+  </BehaviorTree>
+
+  <!-- ═══════════════════════════════════════════════════════════════════
+       TASK 6 : RETURN HOME
+       ═══════════════════════════════════════════════════════════════════ -->
+
+  <BehaviorTree ID="ReturnHomeTask">
+    <Sequence name="ReturnHomeSequence">
+      <Action ID="NavigateToStart"/>
+      <Action ID="SearchStartGate"/>
+      <Action ID="AlignStartGate"/>
+      <Action ID="TransitStartGate"/>
+      <Condition ID="MissionFinished"/>
+    </Sequence>
+  </BehaviorTree>
+
+  <!-- ═══════════════════════════════════════════════════════════════════
+       GLOBAL RECOVERY
+       ═══════════════════════════════════════════════════════════════════ -->
+
+  <BehaviorTree ID="GlobalRecovery">
+    <Fallback name="RecoveryFallback">
+      <Sequence>
+        <Condition ID="LocalizationLost"/>
+        <Action ID="StopVehicle"/>
+        <SubTree ID="StabilizeVehicle"/>
+        <Action ID="Relocalize"/>
+      </Sequence>
+      <Sequence>
+        <Condition ID="DepthUnstable"/>
+        <Action ID="HoldDepth"/>
+        <Action ID="ReduceVelocity"/>
+        <Action ID="RecoverDepth"/>
+      </Sequence>
+      <Sequence>
+        <Condition ID="ObstacleDetected"/>
+        <Action ID="StopMotion"/>
+        <Action ID="BackAway"/>
+        <Action ID="ReplanPath"/>
+      </Sequence>
+      <Sequence>
+        <Condition ID="TaskTimeout"/>
+        <Action ID="SkipTask"/>
+        <Action ID="ContinueMission"/>
+      </Sequence>
+      <Sequence>
+        <Condition ID="CriticalFailure"/>
+        <Action ID="AbortMission"/>
+        <Action ID="SurfaceSafely"/>
+        <Action ID="TransmitStatus"/>
+      </Sequence>
+    </Fallback>
+  </BehaviorTree>
 
 </root>

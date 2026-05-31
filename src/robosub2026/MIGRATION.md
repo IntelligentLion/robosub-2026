@@ -1,147 +1,157 @@
-# SHRUB v4 migration — porting the working mission logic into the BT nodes
+# SHRUB v4 migration — status and runbook
 
-**Decision (2026-05):** `bt_mission` (this package, SHRUB v4, BehaviorTree.CPP v4)
-is the canonical mission planner going forward. The legacy `src/mission/`
-package (`main.cpp`, BehaviorTree.CPP **v3**, executable `bt_runner`) remains the
-*only fully working* brain until this migration is complete, so **`run_stack.sh`
-still launches `bt_runner`** on purpose. Do not repoint it at `bt_executor`
-until the nodes below are ported and pool-verified.
+**Status (2026-05-30):** the v4 BT (`bt_mission/bt_executor`) is the only
+planner. The full 2026 "Restore and Recovery" mission tree at
+`bt_xml/robosub2026_mission.xml` loads cleanly, every node referenced by the
+XML is registered, and the tree ticks end-to-end without hardware (most
+actions log + return SUCCESS so the tree flows). Real hardware/perception
+coverage is partial — see "Known gaps" below.
+
+Legacy v3 (`src/mission/`, `bt_runner`) has been **deleted**. The duplicate
+`src/zed2i_vslam(2)/`, the vendored ZED SDK examples
+(`src/vision/vision/zed-sdk-master/`), and the empty `src/test/`,
+`src/examples/`, `src/zed-ros2-{examples,wrapper}/` stubs are also gone.
+
+**No hydrophones this season.** Pinger-related actions (`VerifyHydrophones`,
+`DetectPinger`, `NavigateToPinger`, `DetectOctagonPinger`) have been removed
+from the tree, the node declarations, and the registration. Torpedo and
+octagon tasks enter via vision-only search.
 
 ## v3 → v4: the season-over-season migration (2025 → 2026)
-
-This is a yearly transition, not just a refactor. "v3" and "v4" are SHRUB
-software generations tied to competition seasons:
 
 | | **SHRUB v3 (last season)** | **SHRUB v4 (this season, 2026)** |
 |---|---|---|
 | Package | `src/mission/` (`mission`) | `src/robosub2026/` (`bt_mission`) |
 | Executable | `bt_runner` | `bt_executor` |
 | BT engine | BehaviorTree.CPP **v3** | BehaviorTree.CPP **v4** (+ `behaviortree_ros2`) |
-| Structure | one monolithic ~2000-line `main.cpp` (publishers, subscribers, and all BT nodes inline) | modular node files (`safety/nav/perception/manipulation/task_logic`) + a **declarative** `bt_xml/robosub2026_mission.xml` |
+| Structure | one ~2000-line `main.cpp` | modular node files + declarative XML |
 | Mission | last season's course | 2026 **"Restore and Recovery"** course |
 
-**What changed and why:**
+## What this branch does
 
-1. **New course (2026 "Restore and Recovery").** The task set and scoring differ
-   from last season: role selection at the gate (Survey & Repair vs Search &
-   Rescue), Avoid Debris (slalom), Recon (bins/markers), Deploy (torpedoes),
-   Resupply (octagon), Return Home — plus the time-bonus strategy (touch buoy +
-   drop marker/fire torpedo + surface in float area). See `docs/` and the
-   top-level `README.md` → Mission Strategy. The v4 node vocabulary
-   (`Detect_bin_below`, `Align_to_opening`, `Surface_in_float_area`, …) was
-   designed around these 2026 tasks; the v3 nodes were named for last season.
+- **`bt_xml/robosub2026_mission.xml`** — the canonical Groot2-formatted tree.
+  Root: `MainTree`. ~50 subtrees, 39 conditions, ~130 action node types.
+- **`include/bt_mission/shrub_nodes.hpp`** — declares every node referenced by
+  the XML using compact macros (`SHRUB_SYNC`, `SHRUB_COND`, `SHRUB_STATEFUL`).
+  Stateful actions share a `TimedAction` base for deadline tracking.
+- **`src/safety_nodes.cpp`** — all 39 conditions. Read blackboard with safe
+  defaults, or live `MissionIO` state where applicable
+  (`GateDetected`, `LocalizationStable/Lost`, `ValidDropAltitude`).
+- **`src/nav_nodes.cpp`** — initialization + every navigation / movement
+  action. Stateful actions drive `MovementCommand` (`thruster_node`) or
+  `NavigationCommand` (`autonomous_controller`) via `MissionIO`.
+- **`src/perception_nodes.cpp`** — `Detect_*` / `Search*` / `Identify*` /
+  `Estimate*` wrappers around `MissionIO::bestDetection(label, conf)`.
+- **`src/manipulation_nodes.cpp`** — actuator stubs that update the
+  blackboard counters (`markers_remaining`, `torpedoes_remaining`,
+  `objects_delivered`) so downstream BT branches advance correctly.
+- **`src/task_logic_nodes.cpp`** — `CalculateRotationCount` +
+  `registerAllNodes(factory, ros_node)`. The single place new node types are
+  registered.
+- **`src/bt_executor.cpp`** — `tree_id` default `MainTree`; seeds the
+  blackboard with `coin_flip`, `role`, `gate_red_side`, `style_enabled`,
+  counters, and `task_start_time`. Pushes live depth in each tick.
+- **`launch/shrub.launch.py`** — parameters for `coin_flip`, `role`,
+  `gate_red_side`, `style_enabled` (exposed on the command line).
+- **`src/run_stack.sh`** — switched from `mission/bt_runner` to
+  `bt_mission/bt_executor`.
 
-2. **BT.CPP v3 → v4 API change.** v4 changed the node base classes and config
-   (`NodeConfig`, `SyncActionNode`/`StatefulActionNode` with
-   `onStart/onRunning/onHalted`, ports with defaults). v3 node code does not
-   compile under v4 — it has to be rewritten, not copied.
+## I/O layer (unchanged interface, slightly extended)
 
-3. **Monolith → modular + declarative tree.** v4 splits responsibilities into
-   separate translation units and moves the mission *structure* into XML so the
-   tree can be edited/visualized (Groot2) without recompiling. This is the
-   maintainability win that justified the rewrite.
-
-**Why we re-port instead of reuse:** the *proven, tuned* behavior — vision
-servoing, centering/approach loops, gate/slalom logic — still lives in v3's
-`main.cpp`. The v4 package was authored as a clean skeleton (stubs). Migration =
-carry the proven v3 logic forward into the v4 node structure, adapting it to the
-2026 tasks and the v4 API. The node-by-node map below is that carry-over list.
-
-## Why a migration is needed
-
-The v4 node bodies were stubs (`return SUCCESS;`) that never touched ROS. The
-working logic lives in `src/mission/src/main.cpp` (~2000 lines): a set of
-publishers/subscribers plus ~30 BT action nodes that drive the Python autonomy
-stack via topics and close the loop on vision.
-
-## What is already done (this commit)
-
-- **`include/bt_mission/mission_io.hpp` + `src/mission_io.cpp`** — the shared ROS
-  I/O layer (`shrub::MissionIO`). Singleton created in `bt_executor`. It:
-  - publishes `auv_msgs/MovementCommand` → `movement_command` (consumed by
-    `mavlink_thruster_control/thruster_node`)
-  - publishes `auv_msgs/NavigationCommand` → `navigation_command` (consumed by
-    `control/autonomous_controller`)
-  - subscribes to `vision/detections`, `depth/info`, `localization/pose` and
-    caches them with thread-safe getters (`depth()`, `detections()`,
-    `bestDetection()`, `pose()`).
-- **`bt_executor.cpp`** — calls `MissionIO::init(ros_node)` and injects live
-  `depth` onto the blackboard each tick, so the SafetyMonitor reads a real
-  sensor.
-- **`EmergencySurface`** — now commands `emerge` via `MissionIO` instead of only
-  logging.
-- Build wiring: `auv_msgs` added to `CMakeLists.txt` + `package.xml`.
-
-> ⚠️ None of the C++ in this commit has been compiled in the dev environment.
-> First step for whoever picks this up:
-> `colcon build --packages-select auv_msgs bt_mission` on the Jetson and fix any
-> compile errors before continuing.
-
-## The I/O pattern to use in every node
+`shrub::MissionIO` (`mission_io.hpp/cpp`) — process-wide singleton, created
+once in `bt_executor`. Use from any node:
 
 ```cpp
 #include <bt_mission/mission_io.hpp>
 using shrub::MissionIO;
 
-// Command movement (open-loop; thruster_node auto-stops after `duration`s):
+// open-loop primitive (auto-stops after `duration`):
 MissionIO::get().sendMovement("surge_forward", /*speed*/0.4, /*duration*/2.0);
 
-// Or hand a whole behavior to the autonomous_controller (closed-loop):
-MissionIO::get().sendNav("track_object", /*label*/"gate", /*speed*/0.4);
+// closed-loop hand-off to autonomous_controller:
+MissionIO::get().sendNav("track_object", /*label*/"gate", /*speed*/0.4, /*approach*/1.0);
+// extended overload also accepts target_yaw/x/y/z for heading_hold / waypoint:
+MissionIO::get().sendNav("heading_hold", "", 0.3, 0.0, /*target_yaw_rad*/1.57);
 
-// Read vision feedback inside onRunning():
+// read vision in onRunning():
 shrub::Detection d;
-if (MissionIO::get().bestDetection("gate", 0.5, d)) {
-  double err_x = d.cx - 0.5;   // horizontal centering error
-  // ... return RUNNING until centered, then SUCCESS
-}
+if (MissionIO::get().bestDetection("gate", 0.5, d)) { /* ... */ }
 ```
 
-Prefer `sendNav(...)` for anything that needs a control loop (centering,
-approaching, station-keeping) — `autonomous_controller` already implements those
-modes well. Use `sendMovement(...)` only for short open-loop primitives
-(submerge a fixed time, fire-and-forget turns, the emergency abort).
+## Blackboard contract
 
-## Node-by-node port map  (legacy `main.cpp` → v4 node)
+Seeded by `bt_executor` at startup. Anything not listed is undefined and
+falls back to a node-local default.
 
-| v4 node (this pkg) | Source of truth in legacy `main.cpp` | Suggested wiring |
-|---|---|---|
-| `Submerge`, `AscendTo` | `Submerge` | `sendMovement("submerge"/"emerge", s, t)` then SUCCESS |
-| `Turn`, `Face_direction` | `TurnRight90`, heading nodes | `sendNav("heading_hold", "", 0, 0)` w/ target_yaw, or open-loop rotate |
-| `Move_through_gate` | `Move_with_style_through_gate` | `sendMovement("surge_forward", ...)` for a fixed push |
-| `Navigate_forward`, `Navigate_on_heading` | `Move_until_the_other_end_of_the_path` | `sendNav("waypoint"/"heading_hold", ...)` |
-| `Navigate_to_bearing` | pinger logic | `sendNav` once acoustic bearing is available |
-| `Detect_gate`, `Detect_buoy`, `Detect_bin_below`, `Detect_object`, `Detect_task_board`, `Detect_opening`, `Detect_path_marker`, `Detect_slalom_pipes`, `Detect_vertical_marker`, `Detect_float_area_below` | `VisionSubscriber` + `Detect_*` classes | `bestDetection(label, conf, d)` → SUCCESS/RUNNING; write result to BB |
-| `Detect_animal_on_gate`, `Detect_animal_image` | `Detect_preferred_animal_left_of_center` | same; set `animal`/`side`/`dir` outputs |
-| `Align_to`, `Align_above`, `Align_to_opening`, `Align_to_basket`, `Center_beneath` | `Center_*` nodes | `sendNav("track_object", label)` and watch `bestDetection` centering error |
-| `Approach_and_touch` | buoy touch logic | `sendNav("track_object", "buoy", ...)` with small approach_dist |
-| `Surface_in_float_area`, `Confirm_overhead` | `SurfaceInOctagon`, `ConfirmOverhead` | confirm via `Detect_float_area_below` then `sendMovement("emerge")` |
-| `Grab_object`/`Release_object` | `Grab_trash_with_claw` | **needs a gripper driver** (none exists yet) |
-| `Drop_marker`, `Fire_torpedo` | `Drop_marker` | **needs a marker/torpedo actuator driver** (none exists yet) |
-| `Style_through_gate` | `Move_with_style_through_gate` | open-loop roll/pitch via `sendMovement` |
-| `Determine_basket`, `Compute_slalom_path`, `Increment`, `Compute_reverse_heading` | pure logic — already correct in v4 | no ROS needed |
+| key | type | seed | who writes | who reads |
+|---|---|---|---|---|
+| `coin_flip` | string | param `normal` | executor | `CoinflipNormal`, `CoinflipBackward` |
+| `role` | string | param `survey_repair` | executor + `SetRole*` actions | `RoleSurveyRepair`, `RoleSearchRescue`, role-gated branches |
+| `gate_red_side` | string | param `right` | executor | `GateRedRight`, `GateRedLeft` |
+| `style_enabled` | bool | param `true` | executor | `StyleModeEnabled` |
+| `markers_remaining` | int | 2 | `ReleaseMarker` | `MarkersRemaining` |
+| `torpedoes_remaining` | int | 2 | `LaunchTorpedo` | `TorpedoesRemaining` |
+| `objects_delivered` | int | 0 | `ReleaseObject` | `OneItemInBasket`, `TwoItemsInBasket`, `CalculateRotationCount` |
+| `marker_in_bin` | bool | true | `ObserveMarker`, `RetryMarkerDrop` | `MarkerInBin` |
+| `light_off` | bool | true | `ActivateTool` | `LightOff` |
+| `aligned` | bool | true | `DetectLargeOpening`, `DetectSmallOpening` | `AlignmentConfirmed` |
+| `torpedo_hit` | bool | true | `LaunchTorpedo` | `TorpedoHit` |
+| `inside_octagon` | bool | false | `EstimateOctagonCenter` | `InsideOctagon` |
+| `correct_basket` | bool | true | (perception when wired) | `CorrectBasket` |
+| `object_delivered` | bool | false | `ReleaseObject` | `ObjectDelivered` |
+| `depth` | double | 0 → live | `bt_executor` from MissionIO::depth() | `ValidDropAltitude` (via `altitude_m`) |
+| `altitude_m` | double | 1.0 | (future altimeter) | `ValidDropAltitude` |
+| `task_start_time` | double | startup time | executor | `TaskTimeout` |
+| `gate_search_start` | double | startup time | executor / search nodes | `GateSearchTimeout` |
+| `mission_complete` | bool | false | `MissionComplete` (TODO: wire) | `MissionFinished` |
+| `obstacle_detected` | bool | false | (future obstacle module) | `ObstacleDetected`, `NoCollisionRisk` |
+| `depth_unstable` | bool | false | (future depth monitor) | `DepthUnstable` |
+| `critical_failure` | bool | false | (set by safety logic) | `CriticalFailure` |
+| `battery_pct` | double | 100 | **TODO: Pixhawk SYS_STATUS** | (reserved — no battery condition in current tree) |
+| `leak_detected` | bool | false | **TODO: leak GPIO** | (reserved — no leak condition in current tree) |
 
-## Known issues to fix during the port
+## Vision label vocabulary used by the tree
 
-1. **`IsTimeRemaining` clock mismatch** (`safety_nodes.cpp`): it compares
-   `steady_clock` epoch against `start_time` seeded from `ros_node->now()`
-   (ROS time). Inject elapsed/remaining from `bt_executor` (which has the real
-   `start_time`) onto the blackboard instead, or pass the ROS clock in.
-2. **No `battery_pct` / `leak_detected` publisher** anywhere in the stack. The
-   SafetyMonitor's battery + leak checks are effectively no-ops (they read the
-   seeded blackboard defaults). Add a hardware monitor node (Pixhawk
-   `SYS_STATUS` battery, leak GPIO) that `MissionIO` can subscribe to, then push
-   onto the blackboard like `depth`.
-3. **No gripper / marker / torpedo actuator drivers.** `Grab_object`,
-   `Drop_marker`, `Fire_torpedo` can't do anything real until those exist.
-4. **`bt_xml/robosub2026_mission.xml`** uses the v4 node vocabulary; keep it in
-   sync as nodes are ported. Validate with `xmllint --noout`.
+The perception nodes call `MissionIO::bestDetection(label, conf, out)` with
+these labels. The detector must emit `ObjectDetection.label` values that
+match; otherwise the relevant `Detect_*` returns FAILURE.
+
+```
+gate, role_sign, survey_repair, search_rescue,
+orange_path, slalom_pole, slalom_gap, path_marker,
+pipeline, fire_bin, blood_bin, bin1, bin2,
+marker, magnetic_target,
+target_board, large_opening, small_opening,
+octagon, basket, repair_object, medical_object
+```
+
+When a label has no real publisher yet, the corresponding `Detect_*` returns
+SUCCESS so the tree can still tick — this is the "smoke-test friendly"
+behavior.
+
+## Known gaps / next work
+
+1. **Roll/Pitch primitives** — `Roll90` / `Pitch90` log a warning today
+   because `MovementCommand` has no roll/pitch axis. Add them (or send a
+   compound thruster mix from `thruster_node`) for full style-point support.
+2. **Battery + leak publishers** — `battery_pct` / `leak_detected` keep
+   their seeded defaults. Add a hardware monitor (Pixhawk `SYS_STATUS`
+   battery, leak GPIO) and push onto the blackboard each tick (mirror the
+   `depth` pattern in `bt_executor`).
+3. **Manipulation drivers** — `ReleaseMarker`, `LaunchTorpedo`,
+   `ActivateTool`, `ReleaseObject` log + update counters but do not call
+   real ROS services. Replace each `TODO: <driver>` comment when the driver
+   lands.
+4. **Altitude** — `ValidDropAltitude` reads a blackboard `altitude_m` that
+   nothing publishes. Wire a DVL/sonar altimeter when available.
+5. **TaskTimeout granularity** — currently uses the mission start time as
+   `task_start_time`. For per-subtree timeouts, reset `task_start_time`
+   when entering each task subtree.
 
 ## Definition of done
 
-- `colcon build --packages-select auv_msgs bt_mission` clean.
-- `ros2 run bt_mission bt_executor` drives the sub through the gate in the test
-  tank using the real Python stack (detector + autonomous_controller +
-  thruster_node).
-- Then, and only then: switch `src/run_stack.sh` from `mission bt_runner` to
-  `bt_mission bt_executor` and delete the legacy `src/mission/` package.
+- `colcon build --packages-select auv_msgs bt_mission` clean ✅ (done)
+- Tree validates with `xmllint --noout` ✅ (done)
+- `ros2 run bt_mission bt_executor` ticks end-to-end without hardware,
+  exercising every node ✅ (verified on the Jetson)
+- Pool-verified gate transit + ≥1 task scored

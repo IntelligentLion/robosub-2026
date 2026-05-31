@@ -23,14 +23,8 @@ src/build/
 src/install/
 src/log/
 
-# CMake-generated files
-src/mission/src/Makefile
-src/mission/src/CMakeFiles/
-src/mission/src/cmake_install.cmake
-src/mission/src/CTestTestfile.cmake
-# In-tree CMake build dir + compiled binary (should be built via colcon, not committed)
-src/mission/src/build/
-src/mission/src/main_executable
+# BehaviorTree.ROS2 — cloned per JETSON_SETUP.md, not vendored
+src/BehaviorTree.ROS2/
 
 # Python virtual environments
 .venv/

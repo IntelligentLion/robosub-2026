@@ -2,13 +2,15 @@
 
 **SHRUB (Software for Handling and Regulating Underwater Behavior)** is an autonomous mission planner for the RoboSub 2026 competition, developed by Team IntelligentLion. Built on BehaviorTree.CPP v4 and ROS 2 Humble, SHRUB coordinates all high-level decision-making for our autonomous underwater vehicle (AUV).
 
-> **⚠️ Repo status (read before running):** SHRUB v4 lives in `src/robosub2026/`
-> (package `bt_mission`) and is the canonical planner going forward, but its BT
-> nodes are still being ported from the legacy `src/mission/` package and are
-> **not yet pool-verified**. Until the port is done, `src/run_stack.sh` launches
-> the working **legacy** `mission/bt_runner`. See
-> [`src/robosub2026/MIGRATION.md`](src/robosub2026/MIGRATION.md) for the plan and
-> current state. VSLAM is intentionally disabled for competition — see
+> **Repo status:** SHRUB v4 (`src/robosub2026/`, package `bt_mission`,
+> executable `bt_executor`) is the only mission planner; the legacy v3
+> `src/mission/` package has been removed. `src/run_stack.sh` launches
+> `bt_mission/bt_executor`. See
+> [`src/robosub2026/MIGRATION.md`](src/robosub2026/MIGRATION.md) for the
+> blackboard contract, vision label vocabulary, and known gaps.
+> No hydrophones this season — pinger-related actions are gone; torpedo and
+> octagon tasks enter via vision-only search. VSLAM is intentionally
+> disabled for competition — see
 > `src/localization/launch/vslam_localization_launch.py` for the rationale.
 
 ---
@@ -59,7 +61,7 @@ SHRUB v4 is a complete rewrite of our mission planning system using hierarchical
 
 Based on the official RoboSub 2026 Team Handbook (updated 2026-03-27), key changes include:
 
-- **Pinger Tasks Renamed**: "Deploy" and "Restore" (pinger-only navigation, no path markers)
+- **Renamed Tasks**: "Deploy" and "Restore" (we run them vision-only — no hydrophones on the sub this year)
 - **New Time Bonus Requirement**: "Touch a buoy" added as prerequisite
 - **Floating Structure**: Replaces previous "octagon" terminology
 - **Weight Limit**: 60 kg DQ threshold
@@ -97,7 +99,7 @@ SHRUB's mission is ordered to **unlock the time bonus as fast as possible**, the
 **Budget: 210 seconds total**
 
 ### Phase 3: Bonus Tasks
-- **Deploy** — Pinger navigation + torpedo through openings (120s)
+- **Deploy** — Vision search + torpedo through openings (120s; no pinger this season)
 - **Navigate the Channel** — Slalom through 3 pipe sets (90s)
 - **Return Home** — Pass back through start gate (90s)
 
@@ -150,30 +152,36 @@ SHRUB's mission is ordered to **unlock the time bonus as fast as possible**, the
 ```
 robosub-2026/
 ├── src/
-│   ├── robosub2026/              # Main SHRUB package (bt_mission)
-│   │   ├── bt_xml/
-│   │   │   └── robosub2026_mission.xml    # Main behavior tree definition
-│   │   ├── include/
-│   │   │   └── bt_mission/
-│   │   │       └── shrub_nodes.hpp        # All node declarations
+│   ├── robosub2026/                  # SHRUB v4 — package bt_mission, exec bt_executor
+│   │   ├── bt_xml/robosub2026_mission.xml   # The 2026 mission tree (root: MainTree)
+│   │   ├── include/bt_mission/
+│   │   │   ├── mission_io.hpp               # Singleton ROS I/O layer (pub/sub)
+│   │   │   └── shrub_nodes.hpp              # All BT node declarations
 │   │   ├── src/
-│   │   │   ├── bt_executor.cpp            # Main entry point
-│   │   │   ├── safety_nodes.cpp           # Battery, leak, depth, time checks
-│   │   │   ├── nav_nodes.cpp              # Movement and navigation
-│   │   │   ├── perception_nodes.cpp       # Vision and sensor detection
-│   │   │   ├── manipulation_nodes.cpp     # Gripper, torpedo, marker drop
-│   │   │   └── task_logic_nodes.cpp       # High-level task coordination
-│   │   ├── launch/
-│   │   │   └── shrub.launch.py            # ROS 2 launch file
-│   │   ├── CMakeLists.txt
-│   │   └── package.xml
-│   └── auv_msgs/                 # Custom message definitions
-│       └── msg/
-│           └── ObjectDetectionArray.msg
-├── build/                        # Build artifacts (gitignored)
-├── install/                      # Install space (gitignored)
-├── log/                          # Build/runtime logs (gitignored)
-└── README.md                     # This file
+│   │   │   ├── bt_executor.cpp              # Main: loads XML, seeds BB, ticks tree
+│   │   │   ├── mission_io.cpp               # MissionIO impl
+│   │   │   ├── safety_nodes.cpp             # 39 conditions
+│   │   │   ├── nav_nodes.cpp                # Init + nav/movement actions
+│   │   │   ├── perception_nodes.cpp         # Detect/Estimate/Search/Identify
+│   │   │   ├── manipulation_nodes.cpp       # Marker/torpedo/gripper actuator wrappers
+│   │   │   └── task_logic_nodes.cpp         # Task logic + registerAllNodes
+│   │   ├── launch/shrub.launch.py
+│   │   └── MIGRATION.md                     # v3→v4 notes, blackboard contract
+│   ├── auv_msgs/                     # MovementCommand, NavigationCommand, ObjectDetection*, DepthInfo, BehaviorStatus
+│   ├── mavlink_thruster_control/     # thruster_node (Pixhawk/ArduSub via pymavlink)
+│   ├── control/                      # autonomous_controller (vision + localization → MovementCommand)
+│   ├── localization/                 # localization_node + depth_node
+│   ├── vision/                       # detector (TensorRT/YOLOv8), bottom_camera_node
+│   ├── BehaviorTree.ROS2/            # cloned dep — provides behaviortree_ros2
+│   ├── run_stack.sh                  # launches the full pipeline
+│   └── test_movement.sh
+├── JETSON_SETUP.md                   # Jetson runbook
+├── build_engine.py                   # ONNX → TensorRT FP16 engine
+├── convert_to_onnx.py                # .pt → ONNX
+├── test_pipeline.py                  # Topic-level integration check
+├── test_pixhawk.py                   # Arm + per-thruster bench test
+├── build/ install/ log/              # gitignored
+└── README.md
 ```
 
 ---
@@ -276,140 +284,53 @@ To switch trees, modify the executor source or pass a parameter via launch file.
 
 ## Behavior Tree Structure
 
-### Top Level: SHRUB
+The mission tree is declarative XML at
+[`src/robosub2026/bt_xml/robosub2026_mission.xml`](src/robosub2026/bt_xml/robosub2026_mission.xml)
+(root: `MainTree`). Top-level sequence:
 
-```xml
-<BehaviorTree ID="SHRUB">
-  <ReactiveSequence>
-    <SubTree ID="SafetyMonitor" ... />
-    <SubTree ID="MissionExecution" ... />
-  </ReactiveSequence>
-</BehaviorTree>
+```
+InitializeSystems → HeadingOutAndGate → SlalomTask → ReconBinsTask
+   → DeployTorpedoesTask → ResupplyOctagonTask → ReturnHomeTask
+   → Surface → MissionComplete
 ```
 
-**ReactiveSequence**: Re-evaluates `SafetyMonitor` every tick. If safety fails, mission halts immediately.
+Each task expands into subtrees per phase (search → align → act → verify).
+A `GlobalRecovery` subtree handles localization loss, depth instability,
+obstacles, task timeouts, and critical failure → surface safely.
 
-### SafetyMonitor Subtree
-
-Checks (in order):
-1. **Battery ≥ 20%** → else emergency surface
-2. **No leak detected** → else emergency surface
-3. **Depth ≤ 1.9m** (off pool floor) → else ascend to 1.2m
-4. **Breach prevention**: If depth < 0.15m and NOT inside float area → descend to 0.5m
-5. **Time remaining ≥ 30s** → else emergency surface
-
-### MissionExecution Subtree
-
-```xml
-<Sequence>
-  <!-- Phase 1: Gate (mandatory) -->
-  <Timeout msec="90000">
-    <SubTree ID="HeadingOut_and_Gate" />
-  </Timeout>
-
-  <!-- Phase 2: Time Bonus Unlock -->
-  <SequenceWithMemory name="time_bonus_unlock">
-    <ForceSuccess><SubTree ID="TouchBuoy" /></ForceSuccess>
-    <ForceSuccess><SubTree ID="DropBRUVS" /></ForceSuccess>
-    <ForceSuccess><SubTree ID="SurfaceInFloatArea" /></ForceSuccess>
-  </SequenceWithMemory>
-
-  <!-- Phase 3: Additional Points -->
-  <SequenceWithMemory name="bonus_tasks">
-    <ForceSuccess><SubTree ID="Deploy" /></ForceSuccess>
-    <ForceSuccess><SubTree ID="NavigateTheChannel" /></ForceSuccess>
-    <ForceSuccess><SubTree ID="ReturnHome" /></ForceSuccess>
-  </SequenceWithMemory>
-</Sequence>
-```
-
-**SequenceWithMemory**: Remembers completed children, doesn't re-run them on retry.
-**ForceSuccess**: Wraps a task so failure doesn't block the rest of the mission.
-**Timeout**: Hard deadline for each task.
+For the full per-task structure, open the XML in
+[Groot2](https://www.behaviortree.dev/groot/) or read it directly — it is
+intentionally human-readable.
 
 ---
 
 ## Custom Node Categories
 
-### Condition Nodes
+The full list (39 conditions, ~130 actions) is declared in
+[`include/bt_mission/shrub_nodes.hpp`](src/robosub2026/include/bt_mission/shrub_nodes.hpp)
+and implemented across
+[`safety_nodes.cpp`](src/robosub2026/src/safety_nodes.cpp),
+[`nav_nodes.cpp`](src/robosub2026/src/nav_nodes.cpp),
+[`perception_nodes.cpp`](src/robosub2026/src/perception_nodes.cpp),
+[`manipulation_nodes.cpp`](src/robosub2026/src/manipulation_nodes.cpp),
+and [`task_logic_nodes.cpp`](src/robosub2026/src/task_logic_nodes.cpp).
+Categories:
 
-| Node | Purpose |
-|------|---------|
-| `IsBatteryOk` | Check battery percentage above threshold |
-| `IsLeakDetected` | Check for hull leak |
-| `IsDepthSafe` | Validate depth within min/max bounds |
-| `IsInsideFloatArea` | Check if positioned under floating structure |
-| `IsTimeRemaining` | Check if enough mission time left |
-| `AlwaysSuccess` | Utility node for control flow |
+- **Safety conditions** — battery, leak, depth, time-remaining, localization,
+  task timeout, critical failure, plus role/coin-flip/state-flag predicates.
+- **Initialization** — self-test stubs + `SubmergeToMissionDepth`.
+- **Navigation / movement** — hold-depth/heading/roll/pitch, yaw sweeps,
+  open-loop forward bursts, vision-guided `AlignGateCenter`/`AlignThroughGap`,
+  bin/basket/octagon transits, surface/recovery.
+- **Perception** — `Detect_*`, `Search*`, `Identify*`, `Estimate*` wrappers
+  around `MissionIO::bestDetection(label, conf)`. Vision label vocabulary in
+  [MIGRATION.md](src/robosub2026/MIGRATION.md).
+- **Manipulation** — marker drop, torpedo launch, gripper release, magnetic
+  tool. Update blackboard counters today; hardware drivers TODO.
+- **Task logic** — `CalculateRotationCount` for the octagon bonus.
 
-### Navigation Nodes
-
-| Node | Purpose |
-|------|---------|
-| `Submerge` | Descend to target depth |
-| `AscendTo` | Rise to target depth |
-| `EmergencySurface` | Immediate surface (safety abort) |
-| `Turn` | Rotate by specified degrees |
-| `Navigate_to` | Move to named waypoint |
-| `Navigate_to_bearing` | Follow pinger bearing |
-| `Navigate_on_heading` | Travel on compass heading for distance |
-| `Move_through_gate` | Execute gate-passing maneuver |
-| `Reposition_to_gate_side` | Shift left/right relative to gate |
-| `Record_heading` | Save current heading to blackboard |
-| `Recalibrate_nav` | Reset IMU drift |
-| `Hold_depth` | Maintain depth within tolerance |
-| `Surface_in_float_area` | Surface only when confirmed inside |
-| `Stabilize` | Hold position for specified milliseconds |
-| `Wait` | Pause for specified milliseconds |
-
-### Perception Nodes
-
-All perception nodes write detections to the blackboard for downstream consumers.
-
-| Node | Outputs |
-|------|---------|
-| `Detect_gate` | Gate bounding box/pose |
-| `Detect_animal_on_gate` | Animal type, side, confidence |
-| `Detect_buoy` | Buoy detection |
-| `Detect_bin_below` | Bin location, correct animal half |
-| `Detect_pinger` | Bearing to acoustic pinger |
-| `Detect_float_area_below` | Floating structure edges |
-| `Detect_task_board` | Task board for torpedoes |
-| `Detect_slalom_pipes` | Pipe positions |
-| `Detect_object` | Trash objects (bottle/ladle) |
-| `Detect_path_marker` | Colored path markers |
-
-### Alignment Nodes
-
-Visual servoing nodes that center the AUV on detected targets.
-
-| Node | Purpose |
-|------|---------|
-| `Align_to` | Center on detection (XY plane) |
-| `Align_above` | Position above bin half |
-| `Align_to_opening` | Aim at torpedo opening |
-| `Align_to_basket` | Aim at trash basket |
-| `Center_beneath` | Position beneath floating structure |
-| `Approach_and_touch` | Close distance + make contact |
-
-### Manipulation Nodes
-
-| Node | Purpose |
-|------|---------|
-| `Grab_object` | Close gripper on object |
-| `Release_object` | Open gripper |
-| `Drop_marker` | Release BRUVS marker |
-| `Fire_torpedo` | Launch torpedo from tube |
-
-### Task Logic Nodes
-
-| Node | Purpose |
-|------|---------|
-| `Style_through_gate` | Barrel roll maneuver |
-| `Determine_basket` | Compute correct basket for object (opposite color rule) |
-| `Compute_slalom_path` | Plan path through pipes |
-| `Rotation_bonus` | Rotate N times on surface |
-| `Increment` | Increment blackboard counter |
+> Pinger-based navigation has been **removed** — no hydrophones this season.
+> Torpedo and octagon tasks enter via vision-only search.
 
 ---
 
@@ -532,9 +453,8 @@ Before a competition run:
 - [ ] Test torpedo firing mechanism
 - [ ] Test gripper open/close
 - [ ] Test marker drop solenoids
-- [ ] Confirm pinger frequencies (25-40 kHz)
-- [ ] Load correct mission XML
-- [ ] Set initial blackboard values (preferred_animal, coin_flip, etc.)
+- [ ] Load correct mission XML (`bt_xml/robosub2026_mission.xml`)
+- [ ] Set initial blackboard values via launch params (`coin_flip`, `role`, `gate_red_side`, `style_enabled`)
 - [ ] Review safety monitor thresholds
 - [ ] Dry-run in test tank if available
 
