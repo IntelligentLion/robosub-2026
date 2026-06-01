@@ -1,0 +1,37 @@
+---
+# ════════════════════════════════════════════════════════════════════════════
+#  vslam_node.yaml  —  Parameters for zed2i_vslam_node
+# ════════════════════════════════════════════════════════════════════════════
+
+zed2i_vslam_node:
+  ros__parameters:
+
+    camera_name: "zed2i"    # Must match zed_wrapper camera_name
+
+    # ── TF frame names ──────────────────────────────────────────────────────
+    odom_frame:  "odom"
+    map_frame:   "map"
+    base_frame:  "base_link"
+
+    # ── Jerk rejection ──────────────────────────────────────────────────────
+    # A single frame jump larger than this (metres) is treated as a glitch.
+    # Set conservatively — the AUV max sprint speed is ~1.5 m/s, so at 30 Hz
+    # the max legitimate per-frame delta is ~0.05 m.  0.35 m gives headroom
+    # for sudden thruster bursts without falsely suppressing real motion.
+    jerk_distance_thresh: 0.35   # metres per frame
+
+    # Angular jump threshold in radians per frame.
+    # AUV max rotation ~90 deg/s → ~3 deg/frame at 30 Hz → 0.052 rad/frame.
+    # 0.50 rad (~28 deg/frame) is very conservative — only rejects truly bad frames.
+    jerk_angle_thresh: 0.50      # radians per frame
+
+    # How many consecutive "jerk" frames before we accept it as real motion.
+    # 2 = if two frames in a row both look jerky, trust it — actual thruster burst.
+    jerk_hold_frames: 2
+
+    # ── Path recording ──────────────────────────────────────────────────────
+    max_path_poses: 3000         # Keep last 3000 poses (~100 s at 30 Hz)
+    path_pub_rate_hz: 10.0       # How often RViz gets path updates
+
+    # ── Diagnostics ─────────────────────────────────────────────────────────
+    publish_diagnostics: true

@@ -1,0 +1,335 @@
+Panels:
+  - Class: rviz_common/Displays
+    Help Height: 78
+    Name: Displays
+    Property Tree Widget:
+      Expanded:
+        - /Global Options1
+        - /TF1
+        - /Filtered Pose (Map)1
+        - /Map Path1
+        - /Odom Path1
+        - /Filtered Odometry1
+        - /IMU1
+        - /Jerk Events1
+        - /Axes1
+      Splitter Ratio: 0.5
+    Tree Height: 755
+  - Class: rviz_common/Selection
+    Name: Selection
+  - Class: rviz_common/Tool Properties
+    Expanded:
+      - /2D Goal Pose1
+      - /Publish Point1
+    Name: Tool Properties
+  - Class: rviz_common/Views
+    Expanded:
+      - /Current View1
+    Name: Views
+  - Class: rviz_common/Time
+    Experimental: false
+    Name: Time
+    SyncMode: 0
+    SyncSource: ""
+
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Alpha: 0.5
+      Cell Size: 1
+      Class: rviz_default_plugins/Grid
+      Color: 160; 160; 164
+      Enabled: true
+      Line Style:
+        Line Width: 0.029999999329447746
+        Value: Lines
+      Name: Grid
+      Normal Cell Count: 0
+      Offset:
+        X: 0
+        Y: 0
+        Z: 0
+      Plane: XY
+      Plane Cell Count: 20
+      Reference Frame: <Fixed Frame>
+      Value: true
+
+    - Class: rviz_default_plugins/TF
+      Enabled: true
+      Frame Timeout: 15
+      Frames:
+        All Enabled: false
+        zed2i_camera_link:
+          Value: true
+        zed2i_left_camera_optical_frame:
+          Value: false
+        odom:
+          Value: true
+        map:
+          Value: true
+        base_link:
+          Value: true
+      Marker Scale: 0.5
+      Name: TF
+      Show Arrows: true
+      Show Axes: true
+      Show Names: true
+      Tree:
+        map:
+          odom:
+            base_link:
+              zed2i_camera_link: {}
+      Update Interval: 0
+      Value: true
+
+    - Alpha: 1
+      Arrow Length: 0.3
+      Axes Length: 0.3
+      Axes Radius: 0.02
+      Class: rviz_default_plugins/Pose
+      Color: 0; 200; 50
+      Enabled: true
+      Head Length: 0.07
+      Head Radius: 0.04
+      Name: "Filtered Pose (Map)"
+      Queue Size: 10
+      Shaft Length: 0.23
+      Shaft Radius: 0.015
+      Shape: Arrow
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /zed2i_vslam_node/filtered_pose
+      Unreliable: false
+      Value: true
+
+    - Alpha: 1
+      Buffer Length: 1
+      Class: rviz_default_plugins/Path
+      Color: 0; 220; 80
+      Enabled: true
+      Head Diameter: 0.07
+      Head Length: 0.07
+      Length: 0.3
+      Line Style: Lines
+      Line Width: 0.03
+      Name: "Map Path"
+      Offset:
+        X: 0
+        Y: 0
+        Z: 0
+      Pose Color: 255; 85; 255
+      Pose Style: None
+      Queue Size: 10
+      Radius: 0.03
+      Shaft Diameter: 0.03
+      Shaft Length: 0.1
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /zed2i_vslam_node/path_map
+      Unreliable: false
+      Value: true
+
+    - Alpha: 0.6
+      Buffer Length: 1
+      Class: rviz_default_plugins/Path
+      Color: 255; 160; 0
+      Enabled: true
+      Head Diameter: 0.07
+      Head Length: 0.07
+      Length: 0.3
+      Line Style: Lines
+      Line Width: 0.02
+      Name: "Odom Path (drifts)"
+      Offset:
+        X: 0
+        Y: 0
+        Z: 0
+      Pose Color: 255; 85; 255
+      Pose Style: None
+      Queue Size: 10
+      Radius: 0.03
+      Shaft Diameter: 0.03
+      Shaft Length: 0.1
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /zed2i_vslam_node/path_odom
+      Unreliable: false
+      Value: true
+
+    - Class: rviz_default_plugins/Odometry
+      Angle Tolerance: 0.1
+      Covariance:
+        Orientation:
+          Alpha: 0.5
+          Color: 255; 255; 127
+          Color Style: Unique
+          Frame: Local
+          Offset: 1
+          Scale: 1
+          Value: true
+        Position:
+          Alpha: 0.3
+          Color: 204; 51; 204
+          Scale: 1
+          Value: true
+        Value: false
+      Enabled: true
+      Keep: 50
+      Name: "Filtered Odometry"
+      Position Tolerance: 0.05
+      Queue Size: 10
+      Shape:
+        Alpha: 1
+        Axes Length: 0.25
+        Axes Radius: 0.02
+        Color: 255; 100; 0
+        Head Length: 0.07
+        Head Radius: 0.04
+        Shaft Length: 0.23
+        Shaft Radius: 0.015
+        Value: Arrow
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /zed2i_vslam_node/filtered_odom
+      Unreliable: false
+      Value: true
+
+    - Class: rviz_imu_plugin/Imu
+      Acc Deque Size: 20
+      Acceleration properties:
+        Alpha: 0.8
+        Color: 0; 170; 0
+        History Length: 20
+        Scale: 1
+        Visible: true
+      Angular Velocity properties:
+        Alpha: 0.5
+        Color: 200; 50; 255
+        History Length: 20
+        Scale: 0.5
+        Visible: false
+      Enabled: true
+      Fixed Frame: zed2i_left_camera_optical_frame
+      Name: IMU
+      Orientation properties:
+        Alpha: 0.5
+        Color: 255; 25; 0
+        Visible: true
+      Queue Size: 50
+      Topic:
+        Depth: 50
+        Durability Policy: Volatile
+        Filter size: 50
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /zed2i/zed_node/imu/data
+      Unreliable: true
+      Value: true
+
+    - Class: rviz_default_plugins/Marker
+      Enabled: true
+      Name: "Jerk Events"
+      Namespaces:
+        "": true
+        jerk_events: true
+      Queue Size: 100
+      Topic:
+        Depth: 100
+        Durability Policy: Volatile
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /zed2i_vslam_node/jerk_events
+      Unreliable: false
+      Value: true
+
+    - Class: rviz_default_plugins/Axes
+      Enabled: true
+      Length: 0.5
+      Name: Axes
+      Radius: 0.02
+      Reference Frame: map
+      Value: true
+
+  Enabled: true
+  Global Options:
+    Background Color: 20; 20; 30
+    Fixed Frame: map
+    Frame Rate: 30
+  Name: root
+  Tools:
+    - Class: rviz_default_plugins/Interact
+      Hide Inactive Objects: true
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+    - Class: rviz_default_plugins/FocusCamera
+    - Class: rviz_default_plugins/Measure
+      Line color: 128; 128; 0
+    - Class: rviz_default_plugins/SetInitialPose
+      Covariance x: 0.25
+      Covariance y: 0.25
+      Covariance yaw: 0.06853891909122467
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /initialpose
+    - Class: rviz_default_plugins/SetGoal
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /goal_pose
+    - Class: rviz_default_plugins/PublishPoint
+      Single click: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /clicked_point
+  Transformation:
+    Current:
+      Class: rviz_default_plugins/TF
+  Value: true
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 8
+      Enable Stereo Rendering:
+        Stereo Eye Separation: 0.05999999865889549
+        Stereo Focal Distance: 1
+        Swap Stereo Eyes: false
+        Value: false
+      Focal Point:
+        X: 0
+        Y: 0
+        Z: 0
+      Focal Shape Fixed Size: true
+      Focal Shape Size: 0.05000000074505806
+      Invert Z Axis: false
+      Name: Current View
+      Near Clip Distance: 0.009999999776482582
+      Pitch: 0.8
+      Target Frame: <Fixed Frame>
+      Value: Orbit (rviz)
+      Yaw: 1.0
+    Saved: ~
