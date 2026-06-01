@@ -23,11 +23,8 @@ src/build/
 src/install/
 src/log/
 
-# CMake-generated files
-src/mission/src/Makefile
-src/mission/src/CMakeFiles/
-src/mission/src/cmake_install.cmake
-src/mission/src/CTestTestfile.cmake
+# BehaviorTree.ROS2 — cloned per JETSON_SETUP.md, not vendored
+src/BehaviorTree.ROS2/
 
 # Python virtual environments
 .venv/
@@ -50,9 +47,11 @@ dist/
 
 # Model weights
 *.pt
+*.pth
 *.onnx
 *.engine
 *.trt
+*.weights
 
 # Node
 node_modules/

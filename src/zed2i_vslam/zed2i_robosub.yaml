@@ -1,0 +1,95 @@
+---
+# ════════════════════════════════════════════════════════════════════════════
+#  zed2i_robosub.yaml  —  ZED wrapper config tuned for RoboSub 2026
+#
+#  Key design goals:
+#    • Maximum IMU fusion weight — critical for sudden thruster bursts
+#    • Positional tracking always on with gravity alignment
+#    • Depth ON (helps tracking in feature-sparse pool environments)
+#    • Sensors at 400 Hz for tight IMU integration
+#    • Object detection / body tracking OFF (save GPU for vision pipeline)
+#    • No 2D mode — AUV moves in full 6-DOF
+# ════════════════════════════════════════════════════════════════════════════
+
+general:
+  camera_name:   "zed2i"
+  camera_model:  "zed2i"
+  grab_resolution: "HD720"     # 1280x720 — good balance of features vs speed
+  grab_frame_rate: 30          # 30 fps is enough; higher drains more power
+  gpu_id: 0
+  async_grab_camera_recovery: true  # auto-reconnect if USB glitches
+
+video:
+  brightness:     4
+  contrast:       4
+  hue:            0
+  saturation:     4
+  sharpness:      4
+  gamma:          8
+  auto_exposure_gain: true
+  auto_whitebalance: true
+
+depth:
+  depth_mode: "NEURAL"         # best quality, handles motion blur better than ULTRA
+  # Alternatives if NEURAL too slow on your GPU: "ULTRA" or "QUALITY"
+  depth_stabilization: 1       # 1 = enabled — smooths noisy depth during fast motion
+  min_depth: 0.3               # metres (don't go below 0.2 for ZED2i)
+  max_depth: 10.0              # pool is < 10 m deep
+  openni_depth_mode: false
+
+pos_tracking:
+  pos_tracking_enabled: true
+
+  # ── IMU fusion (THE most important setting for RoboSub) ─────────────────
+  imu_fusion: true
+  # Align the world Z axis with gravity — keeps pitch/roll stable even when
+  # the visual odometry drifts due to fast motion or turbulence.
+  set_gravity_as_origin: true
+
+  # ── TF publishing ────────────────────────────────────────────────────────
+  publish_tf: true
+  publish_map_tf: true
+  publish_imu_tf: true
+
+  # ── Area memory / loop closure ───────────────────────────────────────────
+  # Keep ON — when the AUV passes a known gate/marker it can re-anchor pose.
+  # Set area_file_path to pre-load a mapped pool if available.
+  area_memory_db_path: ""
+  save_area_memory_on_closing: true
+  enable_localization_only: false
+
+  # ── Odometry reset on loop closure ───────────────────────────────────────
+  reset_odom_with_loop_closure: true
+
+  # ── Floor alignment: OFF — AUV pitches/rolls, floor plane is unreliable ──
+  floor_alignment: false
+
+  # ── 2D mode: OFF — full 6-DOF for underwater vehicle ────────────────────
+  two_d_mode: false
+
+  # ── Path publishing (raw from wrapper) ───────────────────────────────────
+  # Our vslam node re-publishes filtered paths; keep these at low rate.
+  path_pub_rate: 1.0           # Hz — raw wrapper path (not the filtered one)
+  path_max_count: 500
+
+  # ── Initial pose (origin at pool start position) ─────────────────────────
+  initial_base_pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]  # [X,Y,Z, R,P,Yaw]
+
+mapping:
+  mapping_enabled: false       # Disable spatial mapping — not needed for competition
+                               # Enable if you want a 3D point cloud of the pool
+
+sensors:
+  sensors_image_sync: false    # Don't sync sensor msgs to frames — publish ASAP
+  sensors_pub_rate: 400.0      # Maximum IMU rate (ZED2i IMU is 400 Hz)
+                               # Critical for fast motion tracking
+
+object_detection:
+  od_enabled: false            # OFF — use your own vision pipeline
+
+body_tracking:
+  bt_enabled: false            # OFF
+
+# ════════════════════════════════════════════════════════════════════════════
+#  End of ZED wrapper config
+# ════════════════════════════════════════════════════════════════════════════

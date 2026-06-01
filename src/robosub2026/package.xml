@@ -2,8 +2,8 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>bt_mission</name>
-  <version>3.0.0</version>
-  <description>SHRUB v3 — RoboSub 2026 Behavior Tree Mission Planner</description>
+  <version>4.0.0</version>
+  <description>SHRUB v4 — RoboSub 2026 Behavior Tree Mission Planner</description>
   <maintainer email="team@intelligentlion.org">IntelligentLion</maintainer>
   <license>MIT</license>
   <buildtool_depend>ament_cmake</buildtool_depend>
@@ -15,6 +15,7 @@
   <depend>std_srvs</depend>
   <depend>geometry_msgs</depend>
   <depend>sensor_msgs</depend>
+  <depend>auv_msgs</depend>
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
   <export>

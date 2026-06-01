@@ -1,0 +1,13 @@
+---
+zed2i_vslam_node:
+  ros__parameters:
+    camera_name: "zed2i"
+    odom_frame:  "odom"
+    map_frame:   "map"
+    base_frame:  "base_link"
+    jerk_distance_thresh: 0.35
+    jerk_angle_thresh: 0.50
+    jerk_hold_frames: 2
+    max_path_poses: 3000
+    path_pub_rate_hz: 10.0
+    publish_diagnostics: true

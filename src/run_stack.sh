@@ -40,7 +40,7 @@ fi
 
 if [[ ! -f "${WORKSPACE_DIR}/install/setup.bash" ]]; then
   echo "Workspace not built yet. Run:"
-  echo "  cd ${WORKSPACE_DIR} && source /opt/ros/humble/setup.bash && colcon build --symlink-install --packages-select auv_msgs vision mission mavlink_thruster_control localization control"
+  echo "  cd ${WORKSPACE_DIR} && source /opt/ros/humble/setup.bash && colcon build --symlink-install --packages-select auv_msgs vision mission bt_mission mavlink_thruster_control localization control"
   exit 1
 fi
 
@@ -80,6 +80,15 @@ if ! kill -0 "${PIDS[-1]}" 2>/dev/null; then
   echo "[WARN] Thruster controller failed to start – continuing in degraded mode"
 fi
 
+# ─── 1b. Safety monitor (battery + leak) ───────────────────────────
+# Defaults to simulate mode (publishes nominal 100% battery, leak=false) so
+# the BT's CriticalFailure branch only fires on real low-battery / leak.
+# Plug real Pixhawk / leak GPIO via ROS params (see safety_monitor_node.py).
+echo "Starting safety monitor..."
+ros2 run mavlink_thruster_control safety_monitor_node &
+PIDS+=($!)
+sleep 1
+
 # ─── 2. Localization node ──────────────────────────────────────────
 echo "Starting localization node..."
 ros2 run localization localization_node &
@@ -92,9 +101,12 @@ ros2 run control autonomous_controller &
 PIDS+=($!)
 sleep 1
 
-# ─── 4. Behavior tree ───────────────────────────────────────────────
-echo "Starting behavior tree..."
-ros2 run mission bt_runner &
+# ─── 4. Behavior tree (SHRUB v4 — bt_mission/bt_executor) ───────────
+# Loads bt_xml/robosub2026_mission.xml (the 2026 "Restore and Recovery" tree)
+# and ticks it at 50 ms. Fall back to the legacy v3 runner during a bring-up
+# issue with:  ros2 run mission bt_runner
+echo "Starting behavior tree (SHRUB v4)..."
+ros2 run bt_mission bt_executor &
 PIDS+=($!)
 sleep 1
 
