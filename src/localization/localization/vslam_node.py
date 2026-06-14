@@ -12,17 +12,47 @@ Parameters:
   - odom_frame (str): odom frame id (default: odom)
 """
 
-import os
+import math
+from time import sleep
+
 import rclpy
 from rclpy.node import Node
 
 import pyzed.sl as sl
-import math
 from nav_msgs.msg import Odometry, Path
 from geometry_msgs.msg import PoseStamped, TransformStamped
 import tf2_ros
 from std_srvs.srv import Trigger as TriggerSrv
 from rclpy.callback_groups import ReentrantCallbackGroup
+
+# Bounds for the area-map export busy-wait (NASA rule 2: every loop has a
+# strict, compile-time upper bound so a stuck ZED export can never hang init).
+_AREA_EXPORT_MAX_POLLS = 1000
+_AREA_EXPORT_POLL_S = 0.01
+
+
+def _quat_mul(a, b):
+    """Hamilton product of two (w, x, y, z) quaternions."""
+    aw, ax, ay, az = a
+    bw, bx, by, bz = b
+    return (
+        aw * bw - ax * bx - ay * by - az * bz,
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by - ax * bz + ay * bw + az * bx,
+        aw * bz + ax * by - ay * bx + az * bw,
+    )
+
+
+def _wait_area_export(zed, get_state, exporting, success):
+    """Bounded poll of the ZED area-export state. Returns the terminal state
+    (or the last polled state if the bound is hit)."""
+    state = get_state()
+    for _ in range(_AREA_EXPORT_MAX_POLLS):
+        if state != exporting:
+            break
+        sleep(_AREA_EXPORT_POLL_S)
+        state = get_state()
+    return state
 
 
 class VSLAMZedNode(Node):
@@ -115,8 +145,6 @@ class VSLAMZedNode(Node):
                 odom.child_frame_id = self.frame_id
 
                 odom.pose.pose.position.x = float(trans[0])
-                # Apply raw translation
-                odom.pose.pose.position.x = float(trans[0])
                 odom.pose.pose.position.y = float(trans[1])
                 odom.pose.pose.position.z = float(trans[2])
 
@@ -151,17 +179,8 @@ class VSLAMZedNode(Node):
                     theta = math.radians(float(self.frame_rot_z_deg))
                     qz = (math.cos(theta/2.0), 0.0, 0.0, math.sin(theta/2.0))
 
-                    def quat_mul(a, b):
-                        aw, ax, ay, az = a
-                        bw, bx, by, bz = b
-                        rw = aw*bw - ax*bx - ay*by - az*bz
-                        rx = aw*bx + ax*bw + ay*bz - az*by
-                        ry = aw*by - ax*bz + ay*bw + az*bx
-                        rz = aw*bz + ax*by - ay*bx + az*bw
-                        return (rw, rx, ry, rz)
-
                     # Apply rotation offset before recorded orientation: q_final = qz * q_rec
-                    qf = quat_mul(qz, q_rec)
+                    qf = _quat_mul(qz, q_rec)
                     odom.pose.pose.orientation.w = qf[0]
                     odom.pose.pose.orientation.x = qf[1]
                     odom.pose.pose.orientation.y = qf[2]
@@ -205,10 +224,11 @@ class VSLAMZedNode(Node):
                             self.get_logger().info(f'Saving area map to {self.area_map_path} on shutdown')
                             status = self.zed.save_area_map(self.area_map_path)
                             if status <= sl.ERROR_CODE.SUCCESS:
-                                export_state = self.zed.get_area_export_state()
-                                while export_state == sl.AREA_EXPORTING_STATE.RUNNING:
-                                    pass
-                                    export_state = self.zed.get_area_export_state()
+                                export_state = _wait_area_export(
+                                    self.zed,
+                                    self.zed.get_area_export_state,
+                                    sl.AREA_EXPORTING_STATE.RUNNING,
+                                    sl.AREA_EXPORTING_STATE.SUCCESS)
                                 if export_state == sl.AREA_EXPORTING_STATE.SUCCESS:
                                     self.get_logger().info(f'Area map saved: {self.area_map_path}')
                                 else:
@@ -239,10 +259,11 @@ class VSLAMZedNode(Node):
             self.get_logger().info(f'Saving area map to {self.area_map_path} (service)')
             status = self.zed.save_area_map(self.area_map_path)
             if status <= sl.ERROR_CODE.SUCCESS:
-                export_state = self.zed.get_area_export_state()
-                while export_state == sl.AREA_EXPORTING_STATE.RUNNING:
-                    pass
-                    export_state = self.zed.get_area_export_state()
+                export_state = _wait_area_export(
+                    self.zed,
+                    self.zed.get_area_export_state,
+                    sl.AREA_EXPORTING_STATE.RUNNING,
+                    sl.AREA_EXPORTING_STATE.SUCCESS)
                 if export_state == sl.AREA_EXPORTING_STATE.SUCCESS:
                     resp.success = True
                     resp.message = f'Saved area map: {self.area_map_path}'

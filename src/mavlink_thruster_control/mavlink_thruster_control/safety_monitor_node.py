@@ -29,7 +29,6 @@ or this node can be the *single* MAVLink owner with thruster_node consuming
 via UDP — both patterns work and both are common on ArduSub stacks.
 """
 
-import math
 import time as _time
 
 import rclpy
@@ -46,6 +45,7 @@ except ImportError:
 class SafetyMonitor(Node):
     PUBLISH_HZ = 2.0
     SYS_STATUS_TIMEOUT_S = 5.0  # treat battery as unknown after this gap
+    MAX_DRAIN_MSGS = 200        # bound on SYS_STATUS messages drained per tick
 
     def __init__(self):
         super().__init__('safety_monitor')
@@ -116,7 +116,8 @@ class SafetyMonitor(Node):
         if not self.master:
             return
         try:
-            while True:
+            # NASA rule 2: hard upper bound so a flooded link can't spin here.
+            for _ in range(self.MAX_DRAIN_MSGS):
                 msg = self.master.recv_match(type='SYS_STATUS', blocking=False)
                 if msg is None:
                     break
