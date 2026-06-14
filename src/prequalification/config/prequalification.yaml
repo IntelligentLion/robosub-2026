@@ -1,0 +1,64 @@
+# Parameters for the RoboSub 2026 prequalification runner.
+# Override any of these at launch, e.g.:
+#   ros2 launch prequalification prequalification.launch.py target_depth_m:=1.2
+# or edit this file and rebuild (it is installed to share/prequalification/config).
+prequalification_node:
+  ros__parameters:
+    # Detector class names for the two prequal objects. Must match the labels
+    # the trained model emits on vision/detections (see vision/detector.py and
+    # the vocabulary in robosub2026/MIGRATION.md).
+    gate_label: "gate"
+    marker_label: "marker"
+
+    # Depth target for the run (metres below surface, positive down).
+    target_depth_m: 1.0
+    depth_tol_m: 0.15
+
+    # Thruster speeds, normalised 0.0-1.0.
+    surge_speed: 0.35
+    strafe_speed: 0.30
+    turn_speed: 0.30
+    submerge_speed: 0.40
+    surface_speed: 0.45
+
+    # Vision gating.
+    detection_conf: 0.50
+    detection_stale_s: 1.0
+    center_tol: 0.10
+    yaw_center_gain: 0.6
+
+    # Marker is "to the left" when its normalised image centre-x < this.
+    marker_left_threshold: 0.30
+
+    # Gate is "close" when bbox fills this fraction of the frame, or range
+    # drops below this many metres.
+    gate_close_bbox: 0.45
+    gate_close_range_m: 1.2
+    # Seconds to drive straight ahead to clear a gate once aligned + close.
+    gate_pass_duration_s: 5.0
+
+    # A tracked marker is "behind" after being seen this state then unseen
+    # for this long.
+    marker_lost_s: 1.5
+
+    # 90-degree turns: closed-loop on localization/pose yaw when available,
+    # else a calibrated timed turn.
+    use_pose_for_turns: true
+    turn_90_duration_s: 6.0
+    turn_yaw_tol_rad: 0.10
+
+    # Per-state safety timeouts (seconds) — the state advances on timeout so
+    # the run never stalls. Tune to your pool/run.
+    submerge_timeout_s: 12.0
+    detect_gate_timeout_s: 30.0
+    forward_to_marker_timeout_s: 30.0
+    strafe_timeout_s: 12.0
+    forward_past_marker_timeout_s: 12.0
+    forward_marker_behind_timeout_s: 15.0
+    align_gate_timeout_s: 20.0
+    surface_timeout_s: 12.0
+
+    control_hz: 10.0
+    # Set false for a dry run that logs state transitions but never commands
+    # the thrusters.
+    publish_commands: true

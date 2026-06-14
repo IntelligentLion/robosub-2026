@@ -144,10 +144,29 @@ class _EmptyResult:
 #  TensorRT detector (GPU, FP16)
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _cuda_check(ret):
+    """Unwrap a cuda-python runtime return tuple, raising on error.
+
+    cudart calls return ``(err,)`` or ``(err, value, ...)``. Returns the single
+    value when present so callers can write ``ptr = _cuda_check(cudaMalloc(n))``.
+    """
+    if isinstance(ret, tuple):
+        err, rest = ret[0], ret[1:]
+    else:
+        err, rest = ret, ()
+    if int(err) != 0:
+        raise RuntimeError(f'CUDA runtime error: {err}')
+    if len(rest) == 1:
+        return rest[0]
+    if len(rest) > 1:
+        return rest
+    return None
+
+
 class TensorRTDetector:
     def __init__(self, onnx_path: str, class_names=None):
         import tensorrt as trt
-        import torch
+        from cuda.bindings import runtime as cudart
 
         engine_path = onnx_path.replace('.onnx', '.engine')
         logger = trt.Logger(trt.Logger.WARNING)
@@ -177,7 +196,6 @@ class TensorRTDetector:
                 f.write(serialized)
             del builder, network, parser, config, serialized
             gc.collect()
-            torch.cuda.empty_cache()
             print(f'[TensorRTDetector] Engine saved: {engine_path}')
 
         runtime = trt.Runtime(logger)
@@ -192,20 +210,30 @@ class TensorRTDetector:
         self.input_h = int(in_shape[2])
         self.input_w = int(in_shape[3])
 
-        # Pre-allocate persistent CUDA buffers
-        self._inp_buf = torch.empty(
-            (int(in_shape[0]), int(in_shape[1]), self.input_h, self.input_w),
-            dtype=torch.float32, device='cuda')
-        self._out_buf = torch.empty(
-            (int(out_shape[0]), int(out_shape[1]), int(out_shape[2])),
-            dtype=torch.float32, device='cuda')
-        self._stream = torch.cuda.Stream()
+        # Pre-allocate persistent CUDA buffers via cuda-python (no torch — the
+        # Jetson's torch wheel is CUDA-13 and can't init the 12.6 driver, so we
+        # manage device memory natively against the system CUDA 12.6 / TRT 10.3).
+        self._cudart = cudart
+        in_count = int(in_shape[0]) * int(in_shape[1]) * self.input_h * self.input_w
+        out_count = 1
+        for d in out_shape:
+            out_count *= int(d)
+        self._inp_nbytes = in_count * 4          # float32
+        self._out_nbytes = out_count * 4
 
-        self.context.set_tensor_address(self.input_name,  self._inp_buf.data_ptr())
-        self.context.set_tensor_address(self.output_name, self._out_buf.data_ptr())
+        self._d_in = _cuda_check(cudart.cudaMalloc(self._inp_nbytes))
+        self._d_out = _cuda_check(cudart.cudaMalloc(self._out_nbytes))
+        self._stream = _cuda_check(cudart.cudaStreamCreate())
+        self._stream_handle = int(self._stream)
 
-        # CPU-side pre-allocated blob
-        self._blob = np.empty((1, 3, self.input_h, self.input_w), dtype=np.float32)
+        self.context.set_tensor_address(self.input_name,  int(self._d_in))
+        self.context.set_tensor_address(self.output_name, int(self._d_out))
+
+        # CPU-side pinned-friendly contiguous buffers for host↔device copies.
+        self._blob = np.ascontiguousarray(
+            np.empty((1, 3, self.input_h, self.input_w), dtype=np.float32))
+        self._out_host = np.ascontiguousarray(
+            np.empty(tuple(int(d) for d in out_shape), dtype=np.float32))
 
         nc = max(int(out_shape[1]) - 4, 1)
         if class_names is not None:
@@ -218,17 +246,21 @@ class TensorRTDetector:
               f'  classes:{list(self.names.values())}')
 
     def predict(self, img, imgsz=640, conf=0.4, iou=0.45, device='cuda'):
-        import torch
-
+        cudart = self._cudart
         orig_h, orig_w = img.shape[:2]
         self._preprocess(img)
 
-        self._inp_buf.copy_(torch.from_numpy(self._blob), non_blocking=True)
-        with torch.cuda.stream(self._stream):
-            self.context.execute_async_v3(self._stream.cuda_stream)
-        self._stream.synchronize()
+        # Host→device, run, device→host on a single stream, then sync.
+        _cuda_check(cudart.cudaMemcpyAsync(
+            int(self._d_in), self._blob.ctypes.data, self._inp_nbytes,
+            cudart.cudaMemcpyKind.cudaMemcpyHostToDevice, self._stream))
+        self.context.execute_async_v3(self._stream_handle)
+        _cuda_check(cudart.cudaMemcpyAsync(
+            self._out_host.ctypes.data, int(self._d_out), self._out_nbytes,
+            cudart.cudaMemcpyKind.cudaMemcpyDeviceToHost, self._stream))
+        _cuda_check(cudart.cudaStreamSynchronize(self._stream))
 
-        raw = self._out_buf.cpu().numpy()
+        raw = self._out_host
         boxes, cls_ids, confs = _parse_yolo(raw, conf)
         if len(boxes) == 0:
             return [_EmptyResult()]
@@ -249,6 +281,21 @@ class TensorRTDetector:
         blob = resized.astype(np.float32, copy=False)
         blob *= (1.0 / 255.0)
         np.copyto(self._blob, blob.transpose(2, 0, 1)[np.newaxis])
+
+    def __del__(self):
+        # Free device memory / stream best-effort on teardown.
+        cudart = getattr(self, '_cudart', None)
+        if cudart is None:
+            return
+        try:
+            if getattr(self, '_d_in', None) is not None:
+                cudart.cudaFree(self._d_in)
+            if getattr(self, '_d_out', None) is not None:
+                cudart.cudaFree(self._d_out)
+            if getattr(self, '_stream', None) is not None:
+                cudart.cudaStreamDestroy(self._stream)
+        except Exception:
+            pass
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -359,7 +406,7 @@ def get_shared_model(onnx_path: str, class_names=None):
         avail_mb = _available_memory_mb()
 
         try:
-            import tensorrt, torch
+            import tensorrt  # noqa: F401 — native TRT 10.3, no torch needed
             if has_engine:
                 model = TensorRTDetector(onnx_path, class_names=class_names)
                 print('[get_shared_model] Backend: TensorRT GPU (loaded pre-built engine)')
@@ -424,7 +471,7 @@ class VisionNode(Node):
 # ─────────────────────────────────────────────────────────────────────────────
 
 _PKG_DIR = os.path.dirname(os.path.abspath(__file__))
-_DEFAULT_ONNX = os.path.join(_PKG_DIR, 'yolov8n.onnx')
+_DEFAULT_ONNX = os.path.join(_PKG_DIR, 'best.onnx')
 
 lock = Lock()
 frame_ready = Event()
@@ -516,7 +563,7 @@ def inference_thread(weights, img_size, conf_thres=0.2, iou_thres=0.45, device='
             model_names = model.names
             use_onnx = True
         else:
-            import torch
+            import torch  # noqa: F401 — load torch first for a clean error if absent
             from ultralytics import YOLO
             model = YOLO(weights)
             model_names = model.names
@@ -545,7 +592,6 @@ def inference_thread(weights, img_size, conf_thres=0.2, iou_thres=0.45, device='
                 if use_onnx:
                     det = model.predict(img, imgsz=img_size, conf=conf_thres, iou=iou_thres)[0].boxes
                 else:
-                    import torch
                     det = model.predict(
                         img, save=False, imgsz=img_size, conf=conf_thres,
                         iou=iou_thres, device=inference_device,
@@ -597,7 +643,10 @@ def run_detector(node):
                         help='Show the annotated live OpenCV window. OFF by default — '
                              'on the headless sub the per-frame full-res retrieve + render '
                              '+ GUI pump is wasted work on the Jetson.')
-    opt = parser.parse_args()
+    # Strip ROS args (e.g. `--ros-args -r __node:=vision_node` injected by
+    # launch) so argparse only sees the detector's own flags.
+    from rclpy.utilities import remove_ros_args
+    opt = parser.parse_args(args=remove_ros_args(sys.argv)[1:])
 
     onnx_path = opt.onnx
     class_names = None

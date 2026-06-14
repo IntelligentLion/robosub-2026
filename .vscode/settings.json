@@ -81,5 +81,6 @@
     "python.analysis.extraPaths": [
             "/opt/ros/noetic/lib/python3/dist-packages",
             "${env:HOME}/ros2_ws/devel/lib/python3/dist-packages"
-        ]
+        ],
+        "python-envs.defaultEnvManager": "ms-python.python:system"
 }

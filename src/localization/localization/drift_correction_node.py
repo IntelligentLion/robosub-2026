@@ -23,8 +23,6 @@ Configuration:
 """
 
 import math
-import sys
-import argparse
 
 import rclpy
 from rclpy.node import Node
@@ -57,6 +55,8 @@ class DriftCorrectionNode(Node):
         self.declare_parameter('max_center_offset', 0.25)
         self.declare_parameter('cooldown_s', 2.0)
         self.declare_parameter('fov_h_deg', 110.0)
+        # Reject corrections that would jump the sub more than this (metres).
+        self.declare_parameter('max_shift_m', 5.0)
 
         marker_map_str = self.get_parameter('marker_map').value
         self._marker_map = _parse_marker_map(marker_map_str)
@@ -64,6 +64,7 @@ class DriftCorrectionNode(Node):
         self._max_offset = self.get_parameter('max_center_offset').value
         self._cooldown_s = self.get_parameter('cooldown_s').value
         self._fov_h = math.radians(self.get_parameter('fov_h_deg').value)
+        self._max_shift_m = float(self.get_parameter('max_shift_m').value)
 
         self._last_correction_time = None
 
@@ -186,6 +187,17 @@ class DriftCorrectionNode(Node):
 
         corrected_x = marker_wx + world_dx
         corrected_y = marker_wy + world_dy
+
+        # Never feed a non-finite or wildly out-of-range correction into the
+        # localization fuser — a single bad value here drifts the whole run.
+        if not all(math.isfinite(v) for v in (corrected_x, corrected_y)):
+            self.get_logger().warn('Non-finite correction computed — skipping')
+            return
+        if abs(world_dx) > self._max_shift_m or abs(world_dy) > self._max_shift_m:
+            self.get_logger().warn(
+                f'Correction shift too large '
+                f'(dx={world_dx:.2f} dy={world_dy:.2f}) — skipping')
+            return
 
         correction = PoseStamped()
         correction.header.stamp = now.to_msg()

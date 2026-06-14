@@ -16,23 +16,18 @@ import sys
 import numpy as np
 import cv2
 import pyzed.sl as sl
-import math
 
 from threading import Event, Lock, Thread
 from time import sleep
 
 import rclpy
 from rclpy.node import Node
-from geometry_msgs.msg import Point, Quaternion, Vector3, Pose, Twist
+from geometry_msgs.msg import Point
 from std_msgs.msg import Float32, Header
-from sensor_msgs.msg import Image as RosImage, LaserScan
-from cv_bridge import CvBridge
 from nav_msgs.msg import Odometry
 from auv_msgs.msg import ObjectDetection, ObjectDetectionArray
 
-from vision.detector import OnnxDetector, TensorRTDetector, get_shared_model
-from vision.detector import _parse_yolo, _nms, _OnnxResult, _OnnxBox, _EmptyResult
-from vision.detector import xywh2abcd, detections_to_custom_box
+from vision.detector import get_shared_model, detections_to_custom_box
 
 
 _PKG_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -56,10 +51,6 @@ class BottomCameraNode(Node):
         self.marker_pub = self.create_publisher(
             ObjectDetectionArray, 'vision/path_markers', 10)
         self.depth_pub = self.create_publisher(Float32, 'depth/sub_depth', 10)
-        # Publishers for RViz: camera image and a basic depth-derived laser scan
-        self.image_pub = self.create_publisher(RosImage, 'camera/left/image_raw', 5)
-        self.scan_pub = self.create_publisher(LaserScan, 'scan', 5)
-        self.bridge = CvBridge()
 
     def publish_odometry(self, translation, orientation, velocity):
         msg = Odometry()
@@ -258,7 +249,6 @@ def run_bottom_camera(node: BottomCameraNode):
     has_depth = init_params.depth_mode != sl.DEPTH_MODE.NONE
 
     zed_pose = sl.Pose()
-    zed_sensors = sl.SensorsData()
 
     try:
         # Positional tracking — the core of VIO odometry
@@ -348,11 +338,6 @@ def run_bottom_camera(node: BottomCameraNode):
                     t = zed_pose.get_translation(sl.Translation()).get()
                     o = zed_pose.get_orientation(sl.Orientation()).get()
 
-                    # Velocity from IMU
-                    zed.get_sensors_data(zed_sensors, sl.TIME_REFERENCE.CURRENT)
-                    imu = zed_sensors.get_imu_data()
-                    ang_vel = imu.get_angular_velocity()
-
                     # ZED RIGHT_HANDED_Y_UP: x=right, y=up, z=backward
                     # Depth below surface = -y
                     sub_depth_m = -float(t[1])
@@ -370,60 +355,6 @@ def run_bottom_camera(node: BottomCameraNode):
                         orientation=[float(o[0]), float(o[1]), float(o[2]), float(o[3])],
                         velocity=velocity,
                     )
-
-            # Publish left image for RViz image display
-            try:
-                img_mat = sl.Mat()
-                zed.retrieve_image(img_mat, sl.VIEW.LEFT, sl.MEM.CPU, display_resolution)
-                img_cv = img_mat.get_data()
-                # ZED returns RGBA; convert to RGB
-                try:
-                    img_rgb = cv2.cvtColor(img_cv, cv2.COLOR_RGBA2RGB)
-                except Exception:
-                    img_rgb = img_cv
-                img_msg = self.bridge.cv2_to_imgmsg(img_rgb, encoding='rgb8')
-                img_msg.header.stamp = node.get_clock().now().to_msg()
-                img_msg.header.frame_id = 'zed_left_camera_frame'
-                self.image_pub.publish(img_msg)
-            except Exception:
-                pass
-
-            # Publish a basic LaserScan synthesized from the center row of the depth map
-            try:
-                depth_mat = sl.Mat()
-                zed.retrieve_measure(depth_mat, sl.MEASURE.DEPTH, sl.MEM.CPU, display_resolution)
-                depth_cv = depth_mat.get_data()
-                h, w = depth_cv.shape[:2]
-                center = depth_cv[h // 2]
-                # LaserScan params
-                scan = LaserScan()
-                scan.header = Header()
-                scan.header.stamp = node.get_clock().now().to_msg()
-                scan.header.frame_id = 'zed_left_camera_frame'
-                # approximate horizontal FOV (degrees)
-                hfov = 90.0
-                angle_min = -math.radians(hfov) / 2.0
-                angle_max = math.radians(hfov) / 2.0
-                scan.angle_min = angle_min
-                scan.angle_max = angle_max
-                scan.angle_increment = (angle_max - angle_min) / float(w)
-                scan.range_min = 0.2
-                scan.range_max = 20.0
-                # Convert center row to ranges, replacing invalid with inf
-                ranges = []
-                for d in center:
-                    try:
-                        r = float(d)
-                        if r <= 0.0 or np.isinf(r) or np.isnan(r):
-                            ranges.append(float('inf'))
-                        else:
-                            ranges.append(r)
-                    except Exception:
-                        ranges.append(float('inf'))
-                scan.ranges = ranges
-                self.scan_pub.publish(scan)
-            except Exception:
-                pass
 
     finally:
         exit_signal = True

@@ -24,6 +24,7 @@ Features
 """
 
 import glob
+import math
 import time as _time
 import rclpy
 from rclpy.node import Node
@@ -307,7 +308,6 @@ class ThrusterController(Node):
                 self.get_logger().warn('Invalid speed/duration types — ignoring')
                 return
 
-            import math
             if not math.isfinite(speed) or not math.isfinite(duration):
                 self.get_logger().warn('Non-finite speed/duration — ignoring')
                 return
