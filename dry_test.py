@@ -1,16 +1,21 @@
 #!/usr/bin/env python3
-"""Dry-test console for the RoboSub 2026 stack — NO hardware, NO real movement.
+"""Test console for the RoboSub 2026 stack — DRIVES REAL THRUSTERS.
 
-This is a bench / dry-land test harness. It does two things at once:
+⚠ SAFETY: this console now commands the Pixhawk. Action calls spin real props.
+Keep clear of the thrusters, run with the sub safely secured / props removed
+for bench checks, and have an e-stop / kill switch ready.
 
-1.  **Print-only thruster stand-in.**  It subscribes to ``movement_command``
-    (the exact topic the real ``mavlink_thruster_control/thruster_node``
-    consumes) and, instead of talking to a Pixhawk, *prints* what the thrusters
-    would do: the four ArduSub ``manual_control`` axes (surge/strafe/heave/yaw)
-    and a plain-English description of the direction + which thruster group
-    drives it.  Run the full autonomy stack against this and you can watch the
-    behavior tree / autonomous_controller / prequalification node drive the sub
-    on dry land with zero risk of spinning a prop.
+This is the same test harness that used to be print-only; it does two things:
+
+1.  **Real thruster driver.**  It runs the production
+    ``mavlink_thruster_control`` ``ThrusterController`` in-process, so every
+    ``movement_command`` (the exact topic that node consumes) is translated to
+    ArduSub ``manual_control`` axes (surge/strafe/heave/yaw) and sent to the
+    Pixhawk over MAVLink — armed, in MANUAL mode, with the 10 Hz control loop,
+    1 Hz heartbeat and watchdog the real mission uses. A concise one-line
+    confirmation of each command is still echoed so the operator can follow
+    the run. Drive the full autonomy stack against this and the behavior tree /
+    autonomous_controller / prequalification node move the actual sub.
 
 2.  **Interactive subsystem tester.**  A menu lets you exercise every part of
     the sub *individually* without the rest of the stack:
@@ -23,50 +28,47 @@ This is a bench / dry-land test harness. It does two things at once:
       * navigation — send ``navigation_command`` to the autonomous_controller
       * monitor  — watch ``navigation_command`` coming out of the behavior tree
 
-Every outbound thruster command is rendered as text, so nothing ever moves.
+Every outbound thruster command is sent to the Pixhawk, so the sub really moves.
 
 Usage
 -----
-  # 1. Source the workspace so auv_msgs is importable
+  # 1. Source the workspace so auv_msgs + mavlink_thruster_control are importable
   source /opt/ros/humble/setup.bash
   source install/setup.bash
 
   # 2. Run the console
   python3 dry_test.py                 # interactive menu
   python3 dry_test.py --sweep         # auto-cycle every direction, then exit
-  python3 dry_test.py --monitor       # passive: just print what the stack commands
-  python3 dry_test.py --camera        # camera-only: real detections + print thrusters
+  python3 dry_test.py --monitor       # passive: drive thrusters from the stack
+  python3 dry_test.py --camera        # camera-only: real detections + real thrusters
 
-Camera-only dry test (ONLY the camera plugged in)
--------------------------------------------------
-Verify the vision pipeline and the detection-based decision logic before the
-thrusters are wired up:
-  Terminal A:  python3 dry_test.py --camera          # detections in, thrusters printed
+Camera test (camera + Pixhawk connected)
+----------------------------------------
+Verify the vision pipeline and the detection-based decision logic driving the
+real thrusters:
+  Terminal A:  python3 dry_test.py --camera          # detections in, thrusters driven
   Terminal B:  ros2 run vision detector ...          # real camera + detector
   Terminal C:  ros2 run control autonomous_controller   # (or a mission node)
 You see the REAL detections the camera produces AND the thruster commands the
 planner generates from them — so you confirm both "does detection work?" and
-"do the conditions based on detections work?" without anything moving. Later,
-with the Pixhawk connected, drop the --camera flag (or run the real
-thruster_node) and the exact same setup tests the full pipeline end to end,
-real detections driving real, correct thruster movement.
+"do the conditions based on detections work?" while the sub moves for real.
 
-Typical dry run of the WHOLE sub:
-  Terminal A:  python3 dry_test.py --monitor      # the print-only "thrusters"
+Typical run of the WHOLE sub:
+  Terminal A:  python3 dry_test.py --monitor      # the real thruster driver
   Terminal B:  ros2 run control autonomous_controller
   Terminal C:  ros2 run bt_mission bt_executor    # the behavior tree
   Terminal A's menu (or another dry_test.py) can inject fake vision/depth/pose
-  so the behavior tree advances and you watch every command it would send.
+  so the behavior tree advances and you watch every command it sends.
 """
 
 import argparse
 import math
-import sys
 import threading
 import time
 
 import rclpy
 from rclpy.node import Node
+from rclpy.executors import MultiThreadedExecutor
 
 from std_msgs.msg import Bool, Float32
 from geometry_msgs.msg import PoseStamped
@@ -77,6 +79,11 @@ from auv_msgs.msg import (
     ObjectDetection,
     ObjectDetectionArray,
 )
+
+# Production thruster driver — reused so action calls drive the real Pixhawk
+# (arming, MANUAL mode, 10 Hz control loop, heartbeat and watchdog included)
+# instead of being printed. Requires the workspace to be sourced.
+from mavlink_thruster_control.thruster_node import ThrusterController
 
 
 # ─── Thruster mapping (mirrors mavlink_thruster_control/thruster_node) ───────
@@ -147,7 +154,8 @@ MOVE_PRIMITIVES = [
 
 
 class DryTestConsole(Node):
-    """Print-only thruster stand-in + fake-sensor injector for dry testing."""
+    """Command echo + fake-sensor injector for testing (real thrusters driven
+    by the in-process ThrusterController)."""
 
     def __init__(self, quiet_movement=False):
         super().__init__('dry_test_console')
@@ -190,7 +198,7 @@ class DryTestConsole(Node):
         self.leak_pub = self.create_publisher(
             Bool, '/safety/leak_detected', 10)
 
-        # ── Subscriptions (act as the print-only thruster + nav monitor) ──
+        # ── Subscriptions (operator echo of the real thruster + nav bus) ──
         self.create_subscription(
             MovementCommand, 'movement_command', self._on_movement, 10)
         self.create_subscription(
@@ -202,21 +210,22 @@ class DryTestConsole(Node):
             Float32, 'depth/sub_depth', self._on_subdepth, 10)
 
         self.get_logger().info(
-            'Dry-test console up — acting as PRINT-ONLY thrusters. '
-            'Nothing will physically move.')
+            'Test console up — REAL thrusters driven by ThrusterController. '
+            'Action calls spin real props; keep clear.')
 
-    # ─── Inbound: render commands as thruster output ────────────────────
+    # ─── Inbound: echo the command the thrusters are executing ──────────
 
     def _on_movement(self, msg: MovementCommand):
+        # Real driving is done by the in-process ThrusterController; this is a
+        # concise operator confirmation, not a stand-in for movement.
         if self._quiet_movement:
             return
         x, y, z, r, desc = decode_command(msg.command, msg.speed)
         self._move_count += 1
         dur = (f'{msg.duration:.1f}s then auto-stop'
                if msg.duration > 0 else 'until next command')
-        # Printed (not logged) so it reads like a thruster console.
         print(f'\n[THRUSTERS #{self._move_count}] cmd="{msg.command}" '
-              f'speed={msg.speed:.2f} ({dur})')
+              f'speed={msg.speed:.2f} ({dur}) → DRIVING PIXHAWK')
         print(f'   → {desc}')
         print(f'   → MAVLink manual_control: x={x:>5} y={y:>5} '
               f'z={z:>5} r={r:>5}')
@@ -286,11 +295,23 @@ class DryTestConsole(Node):
 
     # ─── Outbound: inject fake data / commands ──────────────────────────
 
+    # Mirror thruster_node's accepted ranges so this driving path can never
+    # publish a command the controller would reject (NASA rules 5/7).
+    _MAX_DURATION_S = 60.0
+
     def send_move(self, command, speed=0.5, duration=3.0):
+        # This is the path that spins real props — validate before publishing.
+        if not isinstance(command, str) or command.strip() == '':
+            self.get_logger().warn('send_move: empty command — ignoring')
+            return
+        if not (math.isfinite(speed) and math.isfinite(duration)):
+            self.get_logger().warn(
+                'send_move: non-finite speed/duration — ignoring')
+            return
         msg = MovementCommand()
         msg.command = command
         msg.speed = float(max(0.0, min(1.0, speed)))
-        msg.duration = float(max(0.0, duration))
+        msg.duration = float(max(0.0, min(self._MAX_DURATION_S, duration)))
         self.move_pub.publish(msg)
 
     def send_nav(self, mode, label='', speed=0.5, approach=0.0,
@@ -365,16 +386,16 @@ class DryTestConsole(Node):
 
 def run_sweep(node: DryTestConsole):
     """Auto-cycle through every direction the sub can move, printing each."""
-    print('\n=== THRUSTER / DIRECTION SWEEP (dry) ===')
-    print('Publishing each movement primitive at speed 0.5; the print-only '
-          'thruster stand-in renders what would happen.\n')
+    print('\n=== THRUSTER / DIRECTION SWEEP (LIVE) ===')
+    print('⚠ Publishing each movement primitive at speed 0.5 — the sub WILL '
+          'move. Keep clear.\n')
     for cmd in MOVE_PRIMITIVES:
         speed = 0.0 if cmd in ('stop', 'depth_hold') else 0.5
         node.send_move(cmd, speed, duration=0.0)
-        time.sleep(0.6)          # let the subscription print
+        time.sleep(0.6)          # hold each axis briefly before the next
     node.send_move('stop', 0.0, 0.0)
     time.sleep(0.4)
-    print('\n=== SWEEP COMPLETE — every direction exercised, nothing moved ===')
+    print('\n=== SWEEP COMPLETE — every direction exercised ===')
 
 
 def _f(prompt, default):
@@ -397,7 +418,7 @@ def print_menu():
     print("""
 ╔════════════════════════════════════════════════════════════════╗
 ║              ROBOSUB 2026 — DRY TEST CONSOLE                     ║
-║          (print-only thrusters — nothing physically moves)       ║
+║  (LIVE: action calls DRIVE the Pixhawk thrusters — be careful!)  ║
 ╠════════════════════════════════════════════════════════════════╣
 ║  MOVEMENT PRIMITIVES                                             ║
 ║   1) submerge        2) emerge                                  ║
@@ -527,54 +548,62 @@ def run_menu(node: DryTestConsole):
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Dry-test console for the RoboSub 2026 stack '
-                    '(print-only, no hardware).')
+        description='Test console for the RoboSub 2026 stack '
+                    '(drives REAL Pixhawk thrusters).')
     parser.add_argument('--sweep', action='store_true',
                         help='Auto-cycle every movement direction then exit.')
     parser.add_argument('--monitor', action='store_true',
-                        help='Passive: only print commands from the stack '
-                             '(acts as the print-only thrusters).')
+                        help='Passive: drive the thrusters from commands the '
+                             'stack publishes (echoes each command).')
     parser.add_argument('--camera', action='store_true',
-                        help='Camera-only dry test: print REAL vision/detections '
-                             'AND the resulting (print-only) thruster commands. '
-                             'Run the detector + a planner alongside; thrusters '
-                             'need not be connected.')
+                        help='Camera test: print REAL vision/detections AND '
+                             'drive the resulting thruster commands. Run the '
+                             'detector + a planner alongside; the Pixhawk must '
+                             'be connected.')
     args, _ = parser.parse_known_args()
 
     rclpy.init()
-    node = DryTestConsole()
+    console = DryTestConsole()
+    # Production driver: turns every movement_command into real MAVLink output.
+    thrusters = ThrusterController()
+
+    # One executor spins both nodes: the console (echo + sensor injection) and
+    # the thruster driver (Pixhawk output) share the same movement_command bus.
+    executor = MultiThreadedExecutor()
+    executor.add_node(console)
+    executor.add_node(thrusters)
 
     # Passive modes (camera / monitor) just watch topics — spin in the MAIN
-    # thread so Ctrl+C unwinds cleanly through rclpy.spin(). The interactive
-    # menu and the sweep need stdin / to publish from the main thread, so for
-    # those we spin ROS in a background thread instead.
+    # thread so Ctrl+C unwinds cleanly. The interactive menu and the sweep need
+    # stdin / to publish from the main thread, so for those we spin ROS in a
+    # background thread instead.
     passive = args.camera or args.monitor
     spin_thread = None
 
     try:
         if passive:
             if args.camera:
-                node._monitor_vision = True
-                print('\n[CAMERA DRY TEST] Watching REAL vision/detections and '
-                      'printing the thruster commands a planner produces '
+                console._monitor_vision = True
+                print('\n[CAMERA TEST] Watching REAL vision/detections and '
+                      'DRIVING the thruster commands a planner produces '
                       'from them.')
                 print('  Start these in other terminals:')
                 print('    ros2 run vision detector ...        # camera + '
                       'detector')
                 print('    ros2 run control autonomous_controller   # or a '
                       'mission node, to exercise detection-based conditions')
-                print('  Thrusters need NOT be connected — movement is '
-                      'print-only. Ctrl+C to quit.\n')
+                print('  ⚠ The Pixhawk is driven — the sub WILL move. '
+                      'Keep clear. Ctrl+C to quit.\n')
             else:
-                print('\n[MONITOR] Acting as print-only thrusters. '
-                      'Run the stack in other terminals; commands appear here. '
-                      'Ctrl+C to quit.\n')
-            rclpy.spin(node)          # blocks until Ctrl+C / shutdown
+                print('\n[MONITOR] Driving the real thrusters from stack '
+                      'commands. ⚠ The sub WILL move. Run the stack in other '
+                      'terminals. Ctrl+C to quit.\n')
+            executor.spin()           # blocks until Ctrl+C / shutdown
         else:
             # Background spin so run_sweep / run_menu own the main thread.
             def _spin():
                 try:
-                    rclpy.spin(node)
+                    executor.spin()
                 except Exception:
                     pass
 
@@ -583,31 +612,36 @@ def main():
 
             if args.sweep:
                 time.sleep(0.5)       # let publishers/subscribers match up
-                run_sweep(node)
+                run_sweep(console)
             else:
                 time.sleep(0.3)
-                run_menu(node)
+                run_menu(console)
     except KeyboardInterrupt:
         pass
     finally:
         # Best-effort final stop while the context is still up.
         try:
             if rclpy.ok():
-                node.send_move('stop', 0.0, 0.0)
+                console.send_move('stop', 0.0, 0.0)
                 time.sleep(0.1)
         except Exception:
             pass
-        # Tear down in the right order to avoid a C++ abort: shut the context
-        # down first (this makes any spinning thread return), join it, then
-        # destroy the node.
-        if rclpy.ok():
-            rclpy.shutdown()
-        if spin_thread is not None:
-            spin_thread.join(timeout=2.0)
+        # Tear down in order: stop the executor (returns any spinning thread),
+        # join it, then destroy the nodes. Destroy the thruster node before
+        # shutting down rclpy so its stop+disarm cleanup still runs.
         try:
-            node.destroy_node()
+            executor.shutdown()
         except Exception:
             pass
+        if spin_thread is not None:
+            spin_thread.join(timeout=2.0)
+        for n in (thrusters, console):
+            try:
+                n.destroy_node()
+            except Exception:
+                pass
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':
