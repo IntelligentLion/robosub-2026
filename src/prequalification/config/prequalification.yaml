@@ -1,27 +1,38 @@
 # Parameters for the RoboSub 2026 prequalification runner.
-# Override any of these at launch, e.g.:
-#   ros2 launch prequalification prequalification.launch.py target_depth_m:=1.2
-# or edit this file and rebuild (it is installed to share/prequalification/config).
+#
+# TWO ways to change these:
+#   1. Edit this file in VSCode, then rebuild (it installs to
+#      share/prequalification/config):
+#         colcon build --packages-select prequalification
+#   2. Override at launch from the terminal — every value below is also a
+#      launch argument, e.g.:
+#         ros2 launch prequalification prequalification.launch.py \
+#             submerge_timeout_s:=15 forward_to_marker_timeout_s:=40 \
+#             max_depth_m:=1.8 max_forward_distance_m:=10
+#
+# The timeouts are grouped at the bottom for quick tuning.
 prequalification_node:
   ros__parameters:
+    # ── Object labels ──────────────────────────────────────────────────
     # Detector class names for the two prequal objects. Must match the labels
-    # the trained model emits on vision/detections (see vision/detector.py and
-    # the vocabulary in robosub2026/MIGRATION.md).
+    # the trained model emits on vision/detections (see vision/detector.py).
     gate_label: "gate"
     marker_label: "marker"
 
-    # Depth target for the run (metres below surface, positive down).
-    target_depth_m: 1.0
+    # ── Depth ──────────────────────────────────────────────────────────
+    # Surface tolerance (metres). max_depth_m is the descent safety cap: stop
+    # going deeper than this even if the gate is never detected.
     depth_tol_m: 0.15
+    max_depth_m: 1.5
 
-    # Thruster speeds, normalised 0.0-1.0.
+    # ── Thruster speeds (normalised 0.0-1.0) ───────────────────────────
     surge_speed: 0.35
     strafe_speed: 0.30
     turn_speed: 0.30
     submerge_speed: 0.40
     surface_speed: 0.45
 
-    # Vision gating.
+    # ── Vision gating ──────────────────────────────────────────────────
     detection_conf: 0.50
     detection_stale_s: 1.0
     center_tol: 0.10
@@ -30,32 +41,51 @@ prequalification_node:
     # Marker is "to the left" when its normalised image centre-x < this.
     marker_left_threshold: 0.30
 
+    # ── Gate transit ───────────────────────────────────────────────────
+    # The gate top is "out of view" once its bbox top edge
+    # (centre_y - height/2) reaches this normalised row (0 = top of frame);
+    # then dive for gate_top_clear_extra_s more so we pass under it cleanly.
+    gate_top_clear_y: 0.05
+    gate_top_clear_extra_s: 1.5
     # Gate is "close" when bbox fills this fraction of the frame, or range
     # drops below this many metres.
     gate_close_bbox: 0.45
     gate_close_range_m: 1.2
     # Seconds to drive straight ahead to clear a gate once aligned + close.
     gate_pass_duration_s: 5.0
+    # Extra nudge forward after the second gate transit.
+    final_forward_duration_s: 3.0
 
+    # ── Marker maneuver ────────────────────────────────────────────────
     # A tracked marker is "behind" after being seen this state then unseen
     # for this long.
     marker_lost_s: 1.5
-
-    # 90-degree turns: closed-loop on localization/pose yaw when available,
-    # else a calibrated timed turn.
+    # Turn-left states stop when the marker is to the left; capped at a ~90 deg
+    # sweep (pose closed-loop when available, else timed). turn_min_s is the
+    # minimum sweep before the marker can terminate a turn.
     use_pose_for_turns: true
     turn_90_duration_s: 6.0
     turn_yaw_tol_rad: 0.10
+    turn_min_s: 1.0
+    # Distance fallback: if no marker after travelling this far (needs pose),
+    # begin the around-the-marker maneuver anyway.
+    max_forward_distance_m: 8.0
 
-    # Per-state safety timeouts (seconds) — the state advances on timeout so
-    # the run never stalls. Tune to your pool/run.
+    # ══ PER-STATE SAFETY TIMEOUTS (seconds) ════════════════════════════
+    # On timeout the state advances so the run never stalls. Tune per pool.
+    #   submerge:            no gate seen -> hold depth + drive forward
+    #   forward_to_marker:   no marker -> begin around-marker maneuver anyway
     submerge_timeout_s: 12.0
-    detect_gate_timeout_s: 30.0
+    submerge_clear_top_timeout_s: 8.0
+    through_gate_timeout_s: 12.0
     forward_to_marker_timeout_s: 30.0
     strafe_timeout_s: 12.0
     forward_past_marker_timeout_s: 12.0
+    turn_timeout_s: 12.0
     forward_marker_behind_timeout_s: 15.0
+    strafe_to_gate_timeout_s: 15.0
     align_gate_timeout_s: 20.0
+    final_forward_timeout_s: 8.0
     surface_timeout_s: 12.0
 
     control_hz: 10.0
