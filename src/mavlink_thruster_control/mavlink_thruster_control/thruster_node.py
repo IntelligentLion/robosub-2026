@@ -91,6 +91,7 @@ class ThrusterController(Node):
         self._last_cmd_time = None      # watchdog: last command timestamp
         self._watchdog_triggered = False
         self._loop_count = 0            # for periodic debug logging
+        self._last_log_key = None       # de-dupe repeated Movement log lines
 
         # ── ROS subscriptions & timers ──────────────────────────────────
         self.create_subscription(
@@ -315,8 +316,15 @@ class ThrusterController(Node):
             speed = max(0.0, min(1.0, speed))
             duration = max(0.0, min(60.0, duration))
 
-            self.get_logger().info(
-                f'Movement: {cmd}  speed={speed:.2f}  dur={duration:.1f}s')
+            # Log only when the command meaningfully changes. Closed-loop
+            # callers (e.g. prequalification depth hold) stream the same
+            # command at the control rate; logging every one floods the
+            # terminal. Speed is quantised so small corrections don't re-log.
+            log_key = (cmd, round(speed / 0.05) * 0.05, round(duration, 1))
+            if log_key != self._last_log_key:
+                self.get_logger().info(
+                    f'Movement: {cmd}  speed={speed:.2f}  dur={duration:.1f}s')
+                self._last_log_key = log_key
 
             dispatch = {
                 'submerge':       lambda: self.submerge(speed),
