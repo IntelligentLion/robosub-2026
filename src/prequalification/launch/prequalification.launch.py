@@ -46,6 +46,11 @@ PARAM_ARGS = [
     # Depth.
     ('depth_tol_m', '0.15'),
     ('max_depth_m', '1.5'),
+    ('enable_depth_hold', 'true'),
+    ('depth_hold_tol_m', '0.10'),
+    ('depth_hold_gain', '1.0'),
+    ('depth_hold_min_speed', '0.10'),
+    ('depth_hold_max_speed', '0.40'),
     # Speeds.
     ('surge_speed', '0.35'),
     ('strafe_speed', '0.30'),

@@ -25,6 +25,16 @@ prequalification_node:
     depth_tol_m: 0.15
     max_depth_m: 1.5
 
+    # Closed-loop depth hold. After the descent ends, every non-vertical state
+    # actively holds the captured depth (re-commands submerge/emerge off
+    # depth/sub_depth error) so depth only changes while submerging/surfacing.
+    # Set false for the old passive neutral-thrust behaviour.
+    enable_depth_hold: true
+    depth_hold_tol_m: 0.10        # deadband (m) — within this, just neutralise
+    depth_hold_gain: 1.0          # command speed per metre of depth error
+    depth_hold_min_speed: 0.10
+    depth_hold_max_speed: 0.40
+
     # ── Thruster speeds (normalised 0.0-1.0) ───────────────────────────
     surge_speed: 0.35
     strafe_speed: 0.30

@@ -89,6 +89,10 @@ S_FINAL_FORWARD = 'final_forward'             # a little more forward to clear
 S_SURFACE = 'surface'
 S_DONE = 'done'
 
+# States that intentionally drive the vertical axis. Everywhere else, depth is
+# actively held (closed-loop) so it does not change unless we mean it to.
+_VERTICAL_STATES = (S_SUBMERGE, S_SUBMERGE_CLEAR_TOP, S_SURFACE)
+
 
 class PrequalificationNode(Node):
     """Scripted prequalification state machine."""
@@ -105,6 +109,16 @@ class PrequalificationNode(Node):
         p('depth_tol_m', 0.15)
         # Safety cap: stop descending past this even if the gate is never seen.
         p('max_depth_m', 1.5)
+        # Closed-loop depth hold. Once the descent ends, every non-vertical
+        # state actively holds the captured depth (re-commanding submerge/emerge
+        # off depth/sub_depth error) so depth only changes while intentionally
+        # submerging or surfacing. Set enable_depth_hold false for the old
+        # passive (neutral-thrust) behaviour.
+        p('enable_depth_hold', True)
+        p('depth_hold_tol_m', 0.10)
+        p('depth_hold_gain', 1.0)        # command speed per metre of error
+        p('depth_hold_min_speed', 0.10)
+        p('depth_hold_max_speed', 0.40)
         # Speeds, normalised 0.0–1.0.
         p('surge_speed', 0.35)
         p('strafe_speed', 0.30)
@@ -169,6 +183,11 @@ class PrequalificationNode(Node):
         self.marker_label = g('marker_label').value
         self.depth_tol_m = float(g('depth_tol_m').value)
         self.max_depth_m = float(g('max_depth_m').value)
+        self.enable_depth_hold = bool(g('enable_depth_hold').value)
+        self.depth_hold_tol_m = float(g('depth_hold_tol_m').value)
+        self.depth_hold_gain = float(g('depth_hold_gain').value)
+        self.depth_hold_min_speed = float(g('depth_hold_min_speed').value)
+        self.depth_hold_max_speed = float(g('depth_hold_max_speed').value)
         self.surge_speed = float(g('surge_speed').value)
         self.strafe_speed = float(g('strafe_speed').value)
         self.turn_speed = float(g('turn_speed').value)
@@ -246,6 +265,8 @@ class PrequalificationNode(Node):
 
         # Depth / pose
         self._depth_m = -1.0
+        # Depth to hold once descending stops (captured live while submerging).
+        self._hold_depth_m = None
         self._pose_yaw = 0.0
         self._pose_received = False
         self._pose_pos = (0.0, 0.0)
@@ -463,9 +484,39 @@ class PrequalificationNode(Node):
                 self._transition(S_SURFACE)
                 return
             handler()
+
+            # Depth bookkeeping. While intentionally moving the vertical axis,
+            # track the live depth so we keep the depth we end up at. Otherwise
+            # actively hold that depth on top of whatever the handler commanded
+            # (the z axis is independent of surge/strafe/yaw at the thruster).
+            if self._state in _VERTICAL_STATES:
+                if self._depth_m >= 0.0:
+                    self._hold_depth_m = self._depth_m
+            elif self._state != S_DONE:
+                self._apply_depth_hold()
         except Exception as e:  # noqa: BLE001
             self.get_logger().error(f'Tick error: {e} — stopping')
             self._stop()
+
+    def _apply_depth_hold(self):
+        """Closed-loop hold of ``self._hold_depth_m`` via the vertical axis.
+
+        The thruster node treats each axis independently and the z command is
+        sticky, so issuing a submerge/emerge/depth_hold after the handler's
+        surge/strafe/yaw corrects depth without disturbing the planar motion.
+        """
+        if not self.enable_depth_hold or self._hold_depth_m is None:
+            return
+        if self._depth_m < 0.0:
+            return  # no depth feedback yet — leave the axis as-is
+        err = self._hold_depth_m - self._depth_m  # +ve → need to go deeper
+        if abs(err) <= self.depth_hold_tol_m:
+            self._send('depth_hold')
+            return
+        speed = min(self.depth_hold_max_speed,
+                    max(self.depth_hold_min_speed,
+                        abs(err) * self.depth_hold_gain))
+        self._send('submerge' if err > 0 else 'emerge', speed)
 
     def _advance_on_timeout(self):
         """Next state when a state times out (see ``_timeout_next``)."""

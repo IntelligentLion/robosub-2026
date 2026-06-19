@@ -32,6 +32,15 @@ stalling. The two headline fallbacks are spelled out above: **submerge** gives
 up on the gate by *time or depth*, and **forward-to-marker** gives up on the
 marker by *time or distance travelled* (distance needs `localization/pose`).
 
+**Depth hold:** the only states that move the vertical axis are `submerge`,
+`submerge_clear_top`, and `surface`. Once the descent ends, every other state
+**actively holds** the depth it reached — a small proportional controller
+re-commands `submerge`/`emerge` off `depth/sub_depth` error (deadband
+`depth_hold_tol_m`), independent of the surge/strafe/yaw the state commands. So
+depth does not drift while driving through the gate or circling the marker; it
+only changes when the sub is deliberately submerging or surfacing. Set
+`enable_depth_hold: false` to revert to passive neutral-thrust holding.
+
 ## Interfaces
 
 **Publishes**
