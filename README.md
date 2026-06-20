@@ -425,6 +425,15 @@ one engine, [`field_common.py`](field_common.py), which runs the production
 > stops + disarms on `Ctrl+C` and prompts for a typed `go` (skip with `--yes`).
 > Source the workspace first: `source install/setup.bash`.
 
+**Flight mode.** These tools run `ThrusterController` in **ALT_HOLD** (its
+default), so ArduSub holds depth on the pressure sensor between and during
+moves while the horizontal axes stay manual — you tune surge/strafe/yaw without
+the sub sinking. ALT_HOLD needs a working depth sensor **and water**; on a dry
+bench use the MANUAL-mode tools instead. The mode is the `flight_mode`
+parameter on `ThrusterController` (`ThrusterController(flight_mode='MANUAL')`),
+defaulting to `ALT_HOLD`. `depth_hold_test.py` (ZED) and the dry-bench tools
+deliberately use MANUAL so an external controller owns depth.
+
 ### Shared tuning flags
 
 **Every** movement script understands the same speed/ramp knobs, so you can

@@ -26,8 +26,8 @@ def main():
     ap.add_argument('--label', default='gate', help='detection label to centre on')
     ap.add_argument('--gain', type=float, default=0.6,
                     help='yaw effort per unit centre-x error (default 0.6)')
-    ap.add_argument('--min-speed', type=float, default=0.1,
-                    help='min yaw effort while correcting (default 0.1)')
+    ap.add_argument('--min-speed', type=float, default=0.4,
+                    help='min yaw effort while correcting (default 0.4)')
     ap.add_argument('--tol', type=float, default=0.08,
                     help='|centre-x - 0.5| under which centred (default 0.08)')
     ap.add_argument('--conf', type=float, default=0.5, help='min detection conf')

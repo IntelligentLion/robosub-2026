@@ -48,7 +48,16 @@ class ThrusterController(Node):
     ARMED_CHECK_INTERVAL_S = 5.0    # verify armed status every 5 s
     DEFAULT_WATCHDOG_S = 30.0       # stop if no command received for this long
 
-    def __init__(self):
+    # ── ArduSub flight modes (custom_mode IDs) ──────────────────────────
+    # ALT_HOLD is the default: the autopilot holds depth on the pressure
+    # sensor while horizontal axes (surge/strafe/yaw) stay pilot-controlled
+    # via manual_control, exactly like MANUAL. Use MANUAL only for dry-bench
+    # arming (no water/depth sensor) or the ZED depth-hold test, where an
+    # external controller must be the sole depth authority.
+    DEFAULT_FLIGHT_MODE = 'ALT_HOLD'
+    _MODE_IDS = {'STABILIZE': 0, 'ALT_HOLD': 2, 'MANUAL': 19}
+
+    def __init__(self, flight_mode=None):
         super().__init__('thruster_controller')
 
         # ── ROS parameters ──────────────────────────────────────────────
@@ -56,11 +65,24 @@ class ThrusterController(Node):
         self.declare_parameter('baud_rate', 115200)
         self.declare_parameter('simulate', False)
         self.declare_parameter('watchdog_timeout', self.DEFAULT_WATCHDOG_S)
+        self.declare_parameter('flight_mode', self.DEFAULT_FLIGHT_MODE)
 
         self.serial_port = self.get_parameter('serial_port').value
         self.baud_rate = self.get_parameter('baud_rate').value
         self.simulate = self.get_parameter('simulate').value
         self.watchdog_timeout = self.get_parameter('watchdog_timeout').value
+
+        # Explicit kwarg overrides the ROS param (which defaults to ALT_HOLD).
+        mode_name = (flight_mode
+                     or self.get_parameter('flight_mode').value
+                     or self.DEFAULT_FLIGHT_MODE).upper()
+        if mode_name not in self._MODE_IDS:
+            self.get_logger().warn(
+                f'Unknown flight_mode "{mode_name}" — falling back to MANUAL')
+            mode_name = 'MANUAL'
+        self.flight_mode_name = mode_name
+        self.flight_mode_id = self._MODE_IDS[mode_name]
+        self.get_logger().info(f'Flight mode: {self.flight_mode_name}')
 
         # ── MAVLink connection ──────────────────────────────────────────
         self.master = None
@@ -132,17 +154,20 @@ class ThrusterController(Node):
                     f'(sysid={self.master.target_system} '
                     f'comp={self.master.target_component})')
 
-                # ── Set MANUAL mode (required for manual_control) ──
+                # ── Set flight mode (ALT_HOLD by default; MANUAL for dry-bench
+                #    / ZED depth-hold). manual_control drives the horizontal
+                #    axes in either mode; ALT_HOLD adds autopilot depth-hold. ──
                 self.master.mav.set_mode_send(
                     self.master.target_system,
                     mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
-                    19)  # 19 = MANUAL in ArduSub
+                    self.flight_mode_id)
                 ack = self.master.recv_match(
                     type='COMMAND_ACK', blocking=True, timeout=3)
                 if ack:
                     self.get_logger().info(
-                        f'Set MANUAL mode ACK: result={ack.result}')
-                else: 
+                        f'Set {self.flight_mode_name} mode ACK: '
+                        f'result={ack.result}')
+                else:
                     self.get_logger().warn(
                         'No ACK for set_mode – trying anyway')
 
@@ -250,7 +275,7 @@ class ThrusterController(Node):
     # ─── Armed-status monitor ──────────────────────────────────────────
 
     def _check_armed_status(self):
-        """Periodically verify the vehicle is still in MANUAL mode & armed."""
+        """Periodically verify the vehicle is still in the chosen mode & armed."""
         if self.simulate or not self.connected or self.master is None:
             return
         try:
@@ -272,11 +297,11 @@ class ThrusterController(Node):
             if not armed:
                 self.get_logger().warn(
                     'Vehicle DISARMED unexpectedly – re-arming …')
-                # Ensure MANUAL mode
+                # Ensure the configured flight mode before re-arming.
                 self.master.mav.set_mode_send(
                     self.master.target_system,
                     mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
-                    19)
+                    self.flight_mode_id)
                 _time.sleep(0.3)
                 if self._arm_vehicle():
                     self.get_logger().info('Re-armed successfully')
@@ -284,14 +309,14 @@ class ThrusterController(Node):
                     self.get_logger().error(
                         'Re-arm FAILED – vehicle may not respond')
 
-            elif custom_mode != 19:
+            elif custom_mode != self.flight_mode_id:
                 self.get_logger().warn(
                     f'Mode changed to {custom_mode} – switching back to '
-                    f'MANUAL (19)')
+                    f'{self.flight_mode_name} ({self.flight_mode_id})')
                 self.master.mav.set_mode_send(
                     self.master.target_system,
                     mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
-                    19)
+                    self.flight_mode_id)
 
         except Exception as exc:
             self.get_logger().warn(f'Armed-status check error: {exc}')

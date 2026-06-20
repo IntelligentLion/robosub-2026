@@ -565,7 +565,8 @@ def main():
     rclpy.init()
     console = DryTestConsole()
     # Production driver: turns every movement_command into real MAVLink output.
-    thrusters = ThrusterController()
+    # MANUAL — dry bench has no water/depth sensor, so ALT_HOLD may refuse to arm.
+    thrusters = ThrusterController(flight_mode='MANUAL')
 
     # One executor spins both nodes: the console (echo + sensor injection) and
     # the thruster driver (Pixhawk output) share the same movement_command bus.

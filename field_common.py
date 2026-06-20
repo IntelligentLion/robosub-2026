@@ -10,9 +10,10 @@ provides one consistent path to the real Pixhawk:
   * ``DetectionMonitor`` / ``CoordMonitor`` — subscribe to ``vision/detections``
     and ``vslam/odometry`` for the detection-gated and coordinate tools.
   * ``session(...)`` — context manager that runs the production
-    ``mavlink_thruster_control.ThrusterController`` in-process (arm, MANUAL
-    mode, heartbeat, watchdog) alongside the driver and any extra nodes, then
-    guarantees a stop + disarm on exit (including Ctrl+C).
+    ``mavlink_thruster_control.ThrusterController`` in-process (arm, ALT_HOLD
+    mode by default — the autopilot holds depth between/under moves — heartbeat,
+    watchdog) alongside the driver and any extra nodes, then guarantees a
+    stop + disarm on exit (including Ctrl+C).
 
 All movement tools share the same tuning flags via ``add_move_args``:
 ``--speed``, ``--ramp-up``, ``--ramp-down``, ``--duration`` (hold at target),
@@ -39,7 +40,7 @@ from nav_msgs.msg import Odometry
 from auv_msgs.msg import MovementCommand, ObjectDetectionArray
 
 # Production thruster driver — reused so these tools drive the real Pixhawk
-# exactly like the mission does (arm, MANUAL mode, 10 Hz loop, heartbeat,
+# exactly like the mission does (arm, ALT_HOLD mode, 10 Hz loop, heartbeat,
 # watchdog). Requires the workspace to be sourced.
 from mavlink_thruster_control.thruster_node import ThrusterController
 

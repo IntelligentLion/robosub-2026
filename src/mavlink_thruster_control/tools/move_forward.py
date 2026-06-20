@@ -2,7 +2,8 @@
 """Drive the sub straight forward for a fixed time, then stop and disarm.
 
 Standalone bench/pool tool — no ROS, no behavior tree. Mirrors the MAVLink
-path used by thruster_node: MANUAL mode + manual_control surge (x axis).
+path used by thruster_node: ALT_HOLD mode + manual_control surge (x axis), so
+the autopilot holds depth (needs a depth sensor + water) while we drive forward.
 
   python3 move_forward.py --speed 0.4 --duration 3
 
@@ -10,7 +11,7 @@ path used by thruster_node: MANUAL mode + manual_control surge (x axis).
   --duration  seconds to hold forward
   --port      flight-controller serial (default /dev/ttyACM0)
 
-Sequence: connect → MANUAL mode → arm → hold forward at 10 Hz (with GCS
+Sequence: connect → ALT_HOLD mode → arm → hold forward at 10 Hz (with GCS
 heartbeat so ArduSub doesn't trip the GCS failsafe) → ramp to neutral →
 disarm. Ctrl-C at any time stops + disarms.
 
@@ -27,9 +28,9 @@ from pymavlink import mavutil
 
 DEFAULT_PORT = '/dev/ttyACM0'
 DEFAULT_BAUD = 115200
-MANUAL_MODE = 19          # ArduSub custom_mode for MANUAL
+ALT_HOLD_MODE = 2         # ArduSub custom_mode for ALT_HOLD
 RATE_HZ = 10              # manual_control + heartbeat send rate
-NEUTRAL_Z = 500           # no vertical thrust
+NEUTRAL_Z = 500           # centred vertical stick → ALT_HOLD holds depth
 
 
 def connect(port, baud):
@@ -41,13 +42,15 @@ def connect(port, baud):
     return master
 
 
-def set_manual_mode(master):
+def set_alt_hold_mode(master):
+    # ALT_HOLD: autopilot holds depth (centred z=500) while we drive surge.
+    # Needs a working depth sensor + water; manual_control surge passes through.
     master.mav.set_mode_send(
         master.target_system,
         mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
-        MANUAL_MODE)
+        ALT_HOLD_MODE)
     ack = master.recv_match(type='COMMAND_ACK', blocking=True, timeout=3)
-    print(f'MANUAL mode ACK: result={ack.result}' if ack
+    print(f'ALT_HOLD mode ACK: result={ack.result}' if ack
           else 'No ACK for set_mode — continuing')
 
 
@@ -119,7 +122,7 @@ def main():
             return 1
 
     master = connect(args.port, args.baud)
-    set_manual_mode(master)
+    set_alt_hold_mode(master)
     time.sleep(0.5)
 
     if not arm(master, True):

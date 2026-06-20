@@ -240,7 +240,9 @@ def main():
         hold_tol_m=args.depth_hold_tol,
         max_depth_m=max_depth_m,
         ramp_time_s=args.ramp_time)
-    thrusters = ThrusterController()        # real Pixhawk driver
+    # MANUAL: the _apply_depth_hold closed loop (ZED-derived sub_depth) is the
+    # sole depth authority here; ALT_HOLD's baro hold would fight it.
+    thrusters = ThrusterController(flight_mode='MANUAL')   # real Pixhawk driver
 
     print('\n⚠ ARMING PIXHAWK — vertical thrusters WILL drive. Keep clear. '
           'Ctrl+C to stop + disarm.\n')

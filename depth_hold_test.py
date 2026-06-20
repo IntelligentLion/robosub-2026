@@ -236,7 +236,9 @@ def main():
         min_speed=args.min_speed, max_speed=args.max_speed,
         deadband_m=args.deadband, settle_tol_m=args.settle_tol,
         max_depth_m=max_depth_m)
-    thrusters = ThrusterController()        # real Pixhawk driver
+    # MANUAL: the ZED P-controller below is the SOLE depth authority. ALT_HOLD
+    # would make the autopilot hold depth off the baro and fight this loop.
+    thrusters = ThrusterController(flight_mode='MANUAL')   # real Pixhawk driver
 
     nodes = [controller, thrusters]
     vslam = None
