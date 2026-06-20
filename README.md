@@ -24,6 +24,7 @@
 - [Project Structure](#project-structure)
 - [Installation](#installation)
 - [Usage](#usage)
+- [Depth Hold Tests](#depth-hold-tests)
 - [Behavior Tree Structure](#behavior-tree-structure)
 - [Custom Node Categories](#custom-node-categories)
 - [Development](#development)
@@ -279,6 +280,132 @@ The mission XML includes three main behavior trees:
 3. **PreQualRun**: Submerge → gate → circle marker → return
 
 To switch trees, modify the executor source or pass a parameter via launch file.
+
+---
+
+## Depth Hold Tests
+
+Two standalone scripts at the repo root **submerge the sub to a fixed depth and
+then actively hold it**. They are bench/pool tools — no behavior tree, no
+mission stack — used to validate that the vertical (heave) axis and depth
+control work before a full run. They differ only in **where depth comes from**:
+
+| Script | Depth source | Mode | Deps |
+|--------|--------------|------|------|
+| `depth_hold_pix_test.py` | Pixhawk pressure sensor (Bar30) | ArduSub **ALT_HOLD** | `pymavlink` only |
+| `depth_hold_test.py` | ZED 2i positional tracking | **MANUAL** + in-script P loop | ROS 2 + ZED SDK + workspace |
+
+> ⚠️ **SAFETY — these ARM the Pixhawk and spin the real vertical thrusters.**
+> Stop `thruster_node` first (it is the single owner of the Pixhawk serial
+> port). Remove or clear the props for a bench check, run on a tether, and keep
+> the kill switch within reach. Both scripts disarm on `Ctrl+C`.
+
+### `depth_hold_pix_test.py` — Pixhawk / pressure-sensor depth hold
+
+This is the recommended pool test: it relies only on the flight controller, so
+it works with no camera and no ROS workspace sourced.
+
+#### Hardware / firmware notes (Pixhawk 2.4.8)
+
+The 2.4.8 is an FMUv2 board running an **older ArduSub** build. Two
+compatibility choices were made for it:
+
+- **Stream request uses `REQUEST_DATA_STREAM`** (the deprecated but
+  universally-supported method) as the primary path. The modern
+  `MAV_CMD_SET_MESSAGE_INTERVAL` is *frequently ignored* on old firmware, so it
+  is only sent as a best-effort extra. Depth (`SCALED_PRESSURE2`) rides the
+  `EXTRA3` stream.
+- All commands used (`SET_MODE`, `COMPONENT_ARM_DISARM`, `MANUAL_CONTROL`,
+  `REQUEST_DATA_STREAM`, `HEARTBEAT`) exist in **MAVLink 1**, which old boards
+  may default to — `pymavlink` negotiates this automatically.
+
+**Requires a working depth/pressure sensor** (Bar30 or equivalent) configured
+in ArduSub — ALT_HOLD has nothing to hold without one. If your depth sensor
+reports on `SCALED_PRESSURE` (msg id 29) instead of `SCALED_PRESSURE2` (137),
+change `PRESSURE_MSG_ID` and the `recv_match` type strings near the top of the
+script.
+
+#### Run from scratch
+
+```bash
+# 1. Make sure NOTHING else owns the Pixhawk serial port.
+#    If the ROS stack is up, stop it (Ctrl+C the launch / kill thruster_node).
+
+# 2. Confirm the flight controller device (USB shows up as /dev/ttyACM0).
+ls /dev/ttyACM*            # or /dev/ttyUSB* on a telemetry radio
+
+# 3. Install the one dependency (if not already present).
+pip3 install pymavlink
+
+# 4. Clear/remove the props. Sub in the water, sitting at the surface.
+
+# 5. Run — submerge 3 ft, hold 20 s, surface, disarm.
+python3 depth_hold_pix_test.py --depth 3 --hold-duration 20
+#    It prints the plan and waits for you to type "go" (skip with --yes).
+```
+
+#### Parameters
+
+| Flag | Default | Meaning |
+|------|---------|---------|
+| `--depth` | `3.0` | Target depth in **feet** below the surface baseline. |
+| `--hold-duration` | `20.0` | Seconds to hold once the target depth is reached, before surfacing. |
+| `--port` | `/dev/ttyACM0` | Flight-controller serial device. |
+| `--baud` | `115200` | Serial baud (USB ignores this; matters on a telemetry radio — often `57600`). |
+| `--kp` | `2.0` | Proportional gain: vertical-effort fraction per **metre** of depth error. |
+| `--min-speed` | `0.15` | Minimum vertical effort (0–1) while moving, so it doesn't stall near target. |
+| `--max-speed` | `0.6` | Maximum vertical effort (0–1) — cap on descent/ascent aggressiveness. |
+| `--deadband` | `0.07` | Half-width (m) of the neutral band; inside it the stick centres and ALT_HOLD locks depth. |
+| `--settle-tol` | `0.1` | Error (m) under which the target counts as "reached" (starts the hold timer). |
+| `--max-depth` | `0.0` | Hard safety abort: surface if measured depth exceeds this (m). `0` → 2× target. |
+| `--water-density` | `1000.0` | kg/m³ for the pressure→depth conversion (fresh ≈ 1000, salt ≈ 1025). |
+| `--yes` | off | Skip the "type go" confirmation prompt. |
+
+#### How the code works
+
+1. **Connect & baseline** (`connect`, `request_pressure`, `latch_surface`):
+   open the serial link, wait for a heartbeat, start the `EXTRA3` data stream,
+   then record the **median surface pressure** as depth-zero while the sub is
+   still floating. Depth is later computed as
+   `depth = (press_abs − surface_press) / (ρ · g)`.
+2. **Arm in ALT_HOLD** (`set_alt_hold`, `arm`): switch to ArduSub custom mode
+   `2` (ALT_HOLD) and arm. In ALT_HOLD the vertical stick is a *climb-rate*
+   command — a centred stick (`z = 500`) tells the autopilot to **hold the
+   current depth** using its own pressure-sensor loop.
+3. **P control loop @ 10 Hz** (`main` loop, `send_frame`, `drain_depth`):
+   each tick reads the latest depth and computes `error = target − depth`.
+   - `|error| ≤ deadband` → `z = 500` (hand the hold to ALT_HOLD).
+   - too shallow (`error > 0`) → `z < 500` (descend).
+   - too deep (`error < 0`) → `z > 500` (ascend).
+   The effort is `clamp(kp·|error|, min_speed, max_speed)` scaled to the
+   0–1000 stick range. As the error shrinks the rate tapers to centre, so the
+   script smoothly hands depth-keeping over to ALT_HOLD rather than fighting
+   it. Every frame also sends a **GCS heartbeat** so ArduSub's GCS-failsafe
+   doesn't trip.
+4. **Hold, surface, disarm**: once within `settle-tol` it holds for
+   `--hold-duration`, then drives up until back inside the deadband of the
+   surface, flushes neutral frames, and disarms. A **hard abort** surfaces and
+   stops if depth ever exceeds `--max-depth`.
+
+### `depth_hold_test.py` — ZED positional-tracking depth hold
+
+Same goal, but depth comes from the **ZED 2i** positional tracking (vertical =
+world `Y` axis) instead of the pressure sensor, and it runs the production
+`mavlink_thruster_control.ThrusterController` in-process (MANUAL mode). Needs
+the ROS 2 workspace sourced and the ZED SDK:
+
+```bash
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+
+python3 depth_hold_test.py                 # submerge 3 ft, then hold
+python3 depth_hold_test.py --depth 1.5     # different target (feet)
+python3 depth_hold_test.py --external-vslam # subscribe to a vslam node you launch
+```
+
+Use the ZED version when you specifically want to validate vision-based depth
+estimation; use the Pixhawk version for a quick, dependency-light vertical/
+thruster check.
 
 ---
 

@@ -64,12 +64,25 @@ def connect(port, baud):
 
 
 def request_pressure(master, hz=20):
-    """Ask the FC to stream SCALED_PRESSURE2 at ~hz."""
-    interval_us = int(1e6 / hz)
-    master.mav.command_long_send(
+    """Ask the FC to stream SCALED_PRESSURE2 at ~hz.
+
+    Pixhawk 2.4.8 runs old ArduSub — MAV_CMD_SET_MESSAGE_INTERVAL (511) is
+    frequently ignored on those builds, so the deprecated-but-universally-
+    supported REQUEST_DATA_STREAM is the primary path (SCALED_PRESSURE2 rides
+    the EXTRA3 stream). SET_MESSAGE_INTERVAL is sent too as a best-effort on
+    firmware new enough to honour it.
+    """
+    master.mav.request_data_stream_send(
         master.target_system, master.target_component,
-        mavutil.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL,
-        0, PRESSURE_MSG_ID, interval_us, 0, 0, 0, 0, 0)
+        mavutil.mavlink.MAV_DATA_STREAM_EXTRA3, hz, 1)   # 1 = start
+    try:
+        interval_us = int(1e6 / hz)
+        master.mav.command_long_send(
+            master.target_system, master.target_component,
+            mavutil.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL,
+            0, PRESSURE_MSG_ID, interval_us, 0, 0, 0, 0, 0)
+    except Exception:
+        pass
 
 
 def read_pressure_pa(master, timeout=1.0):
