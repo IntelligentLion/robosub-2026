@@ -30,6 +30,10 @@ prequalification_node:
     # depth/sub_depth error) so depth only changes while submerging/surfacing.
     # Set false for the old passive neutral-thrust behaviour.
     enable_depth_hold: true
+    # Depth-hold source: 'baro' = Pixhawk ALT_HOLD holds depth (set thruster
+    # flight_mode=ALT_HOLD); 'zed' = run the P-controller below off sub_depth
+    # (set thruster flight_mode=MANUAL, else it fights ALT_HOLD).
+    depth_hold_source: baro
     depth_hold_tol_m: 0.10        # deadband (m) — within this, just neutralise
     depth_hold_gain: 1.0          # command speed per metre of depth error
     depth_hold_min_speed: 0.10

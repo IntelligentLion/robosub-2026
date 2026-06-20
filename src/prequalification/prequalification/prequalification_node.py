@@ -115,6 +115,14 @@ class PrequalificationNode(Node):
         # submerging or surfacing. Set enable_depth_hold false for the old
         # passive (neutral-thrust) behaviour.
         p('enable_depth_hold', True)
+        # Depth-hold SOURCE: who keeps the captured depth in the hold states.
+        #   'baro' → the Pixhawk's ALT_HOLD holds depth on the pressure sensor;
+        #            prequal only commands neutral vertical (depth_hold). Needs
+        #            thruster_node flight_mode=ALT_HOLD (the default).
+        #   'zed'  → prequal runs its own closed-loop P-controller below off
+        #            depth/sub_depth (ZED-derived). Needs thruster_node
+        #            flight_mode=MANUAL, or it fights ALT_HOLD's baro loop.
+        p('depth_hold_source', 'baro')
         p('depth_hold_tol_m', 0.10)
         p('depth_hold_gain', 1.0)        # command speed per metre of error
         p('depth_hold_min_speed', 0.10)
@@ -184,6 +192,17 @@ class PrequalificationNode(Node):
         self.depth_tol_m = float(g('depth_tol_m').value)
         self.max_depth_m = float(g('max_depth_m').value)
         self.enable_depth_hold = bool(g('enable_depth_hold').value)
+        self.depth_hold_source = str(g('depth_hold_source').value).lower()
+        if self.depth_hold_source not in ('baro', 'zed'):
+            self.get_logger().warn(
+                f'Unknown depth_hold_source "{self.depth_hold_source}" — '
+                f'using "baro" (Pixhawk ALT_HOLD).')
+            self.depth_hold_source = 'baro'
+        self.get_logger().info(
+            f'Depth-hold source: {self.depth_hold_source} '
+            + ('(Pixhawk ALT_HOLD baro — set thruster flight_mode=ALT_HOLD)'
+               if self.depth_hold_source == 'baro'
+               else '(ZED P-controller — set thruster flight_mode=MANUAL)'))
         self.depth_hold_tol_m = float(g('depth_hold_tol_m').value)
         self.depth_hold_gain = float(g('depth_hold_gain').value)
         self.depth_hold_min_speed = float(g('depth_hold_min_speed').value)
@@ -505,6 +524,11 @@ class PrequalificationNode(Node):
         sticky, so issuing a submerge/emerge/depth_hold after the handler's
         surge/strafe/yaw corrects depth without disturbing the planar motion.
         """
+        if self.depth_hold_source == 'baro':
+            # Pixhawk ALT_HOLD owns depth from the baro — just hold neutral
+            # vertical so we don't fight the autopilot's depth loop.
+            self._send('depth_hold')
+            return
         if not self.enable_depth_hold or self._hold_depth_m is None:
             return
         if self._depth_m < 0.0:

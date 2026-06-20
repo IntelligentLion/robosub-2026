@@ -631,6 +631,26 @@ factory.registerNodeType<shrub::Detect_coral>("Detect_coral");
 <Detect_coral result="{coral_det}"/>
 ```
 
+### Python: no rebuild needed (`--symlink-install`)
+
+Build the workspace **once** with `--symlink-install` and the `install/` tree
+points at the Python sources in `src/` instead of copying them:
+
+```bash
+colcon build --symlink-install
+```
+
+After that, editing an **existing** `.py` file (nodes, the depth/field-test
+tools, prequal logic) takes effect on the next `ros2 run` / script launch with
+**no rebuild** — just re-source is not even needed. You only need to rebuild
+when you add a **new** file, change `entry_points`/`package.xml`, edit installed
+data (launch/config/YAML), or touch C++ (`bt_mission`).
+
+> If a code change isn't taking effect, you almost certainly have a **stale
+> `install/`** from a non-symlink build (files copied, not linked) — this is the
+> same trap that hid earlier commits during a water test. Re-run the
+> `--symlink-install` build above once to convert it.
+
 ### Testing
 
 #### Unit Testing Individual Nodes

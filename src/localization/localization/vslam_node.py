@@ -93,11 +93,40 @@ class VSLAMZedNode(Node):
 
         # ZED objects
         self.zed = None
+        self._stop = False              # set on shutdown so the ZED loop exits
         self.get_logger().info('vslam_zed_node starting')
 
         # Start ZED camera in a background thread to avoid blocking init
         from threading import Thread
         Thread(target=self._run_zed_loop, daemon=True).start()
+
+    def _open_zed_with_retry(self, init_params, *, backoff_s=3.0):
+        """Open the ZED, retrying with backoff until it succeeds or we stop.
+
+        A camera that is briefly busy (a previous run still releasing it after
+        an SSH drop) or momentarily unplugged recovers on its own — no
+        power-cycle, just rerun. Returns True on success, False if asked to stop.
+        """
+        attempt = 0
+        while rclpy.ok() and not self._stop:
+            attempt += 1
+            self.zed = sl.Camera()
+            status = self.zed.open(init_params)
+            if status == sl.ERROR_CODE.SUCCESS:
+                return True
+            self.get_logger().warn(
+                f'ZED open failed ({status}) attempt {attempt} — retry in '
+                f'{backoff_s:.0f}s. If a previous run holds it: '
+                f'fuser -k /dev/video0 /dev/video1')
+            try:
+                self.zed.close()
+            except Exception:
+                pass
+            for _ in range(int(backoff_s / 0.1)):
+                if self._stop or not rclpy.ok():
+                    return False
+                sleep(0.1)
+        return False
 
     def _run_zed_loop(self):
         try:
@@ -110,11 +139,8 @@ class VSLAMZedNode(Node):
             init_params.coordinate_system = sl.COORDINATE_SYSTEM.RIGHT_HANDED_Y_UP
             init_params.camera_fps = self.zed_fps
 
-            self.zed = sl.Camera()
-            status = self.zed.open(init_params)
-            if status != sl.ERROR_CODE.SUCCESS:
-                self.get_logger().fatal(f'Failed to open ZED camera: {status}')
-                return
+            if not self._open_zed_with_retry(init_params):
+                return                  # asked to stop before the camera opened
 
             pt_params = sl.PositionalTrackingParameters()
             # If user provided an area file path, instruct ZED to use it on enable.
@@ -129,9 +155,35 @@ class VSLAMZedNode(Node):
 
             zed_pose = sl.Pose()
 
-            while rclpy.ok():
+            grab_failures = 0
+            _GRAB_FAILS_BEFORE_REOPEN = 200
+
+            while rclpy.ok() and not self._stop:
                 if self.zed.grab() != sl.ERROR_CODE.SUCCESS:
+                    grab_failures += 1
+                    if grab_failures >= _GRAB_FAILS_BEFORE_REOPEN:
+                        # Camera lost mid-run — reopen (with retry) instead of
+                        # spinning forever, so tracking recovers on reconnect.
+                        self.get_logger().warn(
+                            f'{grab_failures} grab failures — camera lost, '
+                            f'recovering (reopen)…')
+                        try:
+                            self.zed.disable_positional_tracking()
+                        except Exception:
+                            pass
+                        try:
+                            self.zed.close()
+                        except Exception:
+                            pass
+                        if not self._open_zed_with_retry(init_params):
+                            return
+                        self.zed.enable_positional_tracking(pt_params)
+                        self.get_logger().info('ZED recovered — resuming.')
+                        grab_failures = 0
+                    else:
+                        sleep(0.005)        # don't busy-spin the CPU
                     continue
+                grab_failures = 0
 
                 # Get pose in WORLD reference frame
                 self.zed.get_position(zed_pose, sl.REFERENCE_FRAME.WORLD)
@@ -313,11 +365,31 @@ class VSLAMZedNode(Node):
 def main(args=None):
     rclpy.init(args=args)
     node = VSLAMZedNode()
+
+    # Release the camera cleanly on terminate / hangup / interrupt. SIGHUP
+    # matters most: an SSH drop sends it to the foreground process — without
+    # this the ZED is left locked and the next run fails until a power cycle.
+    import signal as _signal
+
+    def _request_shutdown(signum, _frame):
+        node.get_logger().info(f'signal {signum} — releasing ZED and exiting.')
+        node._stop = True
+
+    for _sig in (_signal.SIGINT, _signal.SIGTERM, _signal.SIGHUP):
+        try:
+            _signal.signal(_sig, _request_shutdown)
+        except (ValueError, OSError, AttributeError):
+            pass
+
     try:
-        rclpy.spin(node)
+        # Spin with a timeout so the _stop flag (set from a signal) is noticed.
+        while rclpy.ok() and not node._stop:
+            rclpy.spin_once(node, timeout_sec=0.2)
     except KeyboardInterrupt:
-        pass
+        node._stop = True
     finally:
+        node._stop = True
+        sleep(0.3)                      # let the ZED loop close the camera
         node.destroy_node()
         rclpy.shutdown()
 

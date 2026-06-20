@@ -627,6 +627,100 @@ def inference_thread(weights, img_size, conf_thres=0.2, iou_thres=0.45, device='
 #  Main camera + ZED loop
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _interruptible_sleep(seconds):
+    """Sleep in 0.1 s slices, bailing early if exit_signal is set."""
+    for _ in range(max(1, int(seconds / 0.1))):
+        if exit_signal:
+            return
+        sleep(0.1)
+
+
+def _open_zed(zed, input_type, init_candidates):
+    """One pass over the resolution/depth/fps candidates.
+
+    Returns the InitParameters that opened, or None if none did. Always frees a
+    failed open (close + gc) so a retry starts clean.
+    """
+    for resolution, depth_mode, fps in init_candidates:
+        candidate = sl.InitParameters(input_t=input_type, svo_real_time_mode=True)
+        candidate.coordinate_units = sl.UNIT.METER
+        candidate.depth_mode = depth_mode
+        candidate.coordinate_system = sl.COORDINATE_SYSTEM.RIGHT_HANDED_Y_UP
+        candidate.depth_minimum_distance = 0.3
+        candidate.depth_maximum_distance = 20
+        candidate.camera_resolution = resolution
+        candidate.camera_fps = fps
+        candidate.sdk_verbose = 0
+        if zed.open(candidate) == sl.ERROR_CODE.SUCCESS:
+            print(f'Initialized Camera: resolution={resolution}, '
+                  f'depth={depth_mode}, fps={fps}')
+            return candidate
+        print(f'ZED open failed ({resolution}, {depth_mode}, {fps})')
+        # Explicit close to free leaked CUDA memory from a failed open.
+        zed.close()
+        gc.collect()
+    return None
+
+
+def _open_zed_with_retry(zed, input_type, init_candidates, *, backoff_s=3.0):
+    """Retry the whole candidate list with backoff until it opens or exit.
+
+    A camera that is briefly busy (a previous run still releasing it after an
+    SSH drop) or momentarily unplugged recovers on its own — just rerun, no
+    power-cycle. Returns InitParameters, or None if exit_signal was set first.
+    """
+    attempt = 0
+    while not exit_signal:
+        attempt += 1
+        init_params = _open_zed(zed, input_type, init_candidates)
+        if init_params is not None:
+            return init_params
+        print(f'\n[Vision] camera open failed (attempt {attempt}) — '
+              f'retrying in {backoff_s:.0f}s.')
+        print('  If a previous run still holds it: fuser -k /dev/video0 /dev/video1')
+        print('  Otherwise replug the ZED into a USB 3.0 port. (Ctrl+C to abort.)')
+        _interruptible_sleep(backoff_s)
+    return None
+
+
+def _enable_zed_features(zed, init_params):
+    """Enable positional tracking + custom-box object detection.
+
+    Returns (has_depth, positional_tracking_enabled, object_detection_enabled,
+    obj_param). Safe to call again after a reopen.
+    """
+    has_depth = init_params.depth_mode != sl.DEPTH_MODE.NONE
+    positional_tracking_enabled = False
+    object_detection_enabled = False
+
+    if has_depth:
+        pt_status = zed.enable_positional_tracking(
+            sl.PositionalTrackingParameters())
+        if pt_status == sl.ERROR_CODE.SUCCESS:
+            positional_tracking_enabled = True
+            print('ZED positional tracking enabled')
+        else:
+            print(f'Positional tracking not available: {pt_status}')
+    else:
+        print('Skipping positional tracking (no depth mode)')
+
+    obj_param = sl.ObjectDetectionParameters()
+    obj_param.detection_model = sl.OBJECT_DETECTION_MODEL.CUSTOM_BOX_OBJECTS
+    obj_param.enable_tracking = True
+    obj_param.enable_segmentation = False
+    if has_depth:
+        od_status = zed.enable_object_detection(obj_param)
+        if od_status == sl.ERROR_CODE.SUCCESS:
+            object_detection_enabled = True
+        else:
+            print(f'ZED object detection unavailable: {od_status} — 2D-only')
+    else:
+        print('Running in 2D-only mode (no depth — detections lack distance)')
+
+    return (has_depth, positional_tracking_enabled,
+            object_detection_enabled, obj_param)
+
+
 def run_detector(node):
     global image_net, exit_signal, detections, detection_infos
 
@@ -705,65 +799,18 @@ def run_detector(node):
 
     runtime_params = sl.RuntimeParameters()
     runtime_params.enable_fill_mode = False
-    status = sl.ERROR_CODE.FAILURE
-    init_params = None
 
-    for resolution, depth_mode, fps in init_candidates:
-        candidate = sl.InitParameters(input_t=input_type, svo_real_time_mode=True)
-        candidate.coordinate_units = sl.UNIT.METER
-        candidate.depth_mode = depth_mode
-        candidate.coordinate_system = sl.COORDINATE_SYSTEM.RIGHT_HANDED_Y_UP
-        candidate.depth_minimum_distance = 0.3
-        candidate.depth_maximum_distance = 20
-        candidate.camera_resolution = resolution
-        candidate.camera_fps = fps
-        candidate.sdk_verbose = 0
-        status = zed.open(candidate)
-        if status == sl.ERROR_CODE.SUCCESS:
-            init_params = candidate
-            print(f'Initialized Camera: resolution={resolution}, depth={depth_mode}, fps={fps}')
-            break
-        print(f'ZED open failed ({resolution}, {depth_mode}, {fps}): {status}')
-        # Explicit close to free leaked CUDA memory from failed open
-        zed.close()
-        gc.collect()
-
-    if status != sl.ERROR_CODE.SUCCESS:
-        print(repr(status))
-        print('\nAll camera configurations failed. Troubleshooting steps:')
-        print('  1. Run /usr/local/zed/tools/ZED_Diagnostic for a hardware report.')
-        print('  2. Replug the ZED camera into a USB 3.0 port.')
-        print('  3. Check that no other process holds the camera: fuser /dev/video0 /dev/video1')
-        exit_signal = True
+    # Robust open: keep retrying instead of giving up after one pass, so a
+    # camera that is briefly busy or unplugged recovers without a power-cycle.
+    init_params = _open_zed_with_retry(zed, input_type, init_candidates)
+    if init_params is None:                      # exit requested while waiting
         capture_thread.join(timeout=2.0)
         return
 
-    has_depth = init_params.depth_mode != sl.DEPTH_MODE.NONE
-
     try:
-        if has_depth:
-            pt_params = sl.PositionalTrackingParameters()
-            pt_status = zed.enable_positional_tracking(pt_params)
-            if pt_status == sl.ERROR_CODE.SUCCESS:
-                positional_tracking_enabled = True
-                print('ZED positional tracking enabled')
-            else:
-                print(f'Positional tracking not available: {pt_status}')
-        else:
-            print('Skipping positional tracking (no depth mode)')
-
-        obj_param = sl.ObjectDetectionParameters()
-        obj_param.detection_model = sl.OBJECT_DETECTION_MODEL.CUSTOM_BOX_OBJECTS
-        obj_param.enable_tracking = True
-        obj_param.enable_segmentation = False
-        if has_depth:
-            od_status = zed.enable_object_detection(obj_param)
-            if od_status == sl.ERROR_CODE.SUCCESS:
-                object_detection_enabled = True
-            else:
-                print(f'ZED object detection unavailable: {od_status} — running 2D-only')
-        else:
-            print('Running in 2D-only mode (no depth — detections will lack distance)')
+        (has_depth, positional_tracking_enabled,
+         object_detection_enabled, obj_param) = _enable_zed_features(
+            zed, init_params)
 
         objects = sl.Objects()
         obj_runtime_param = sl.CustomObjectDetectionRuntimeParameters()
@@ -784,16 +831,40 @@ def run_detector(node):
         hud_line3 = f'ZED: {camera_res.width}x{camera_res.height}@{camera_infos.camera_configuration.fps}'
 
         consecutive_grab_failures = 0
-        _MAX_GRAB_FAILURES = 200
+        _GRAB_FAILS_BEFORE_REOPEN = 200
 
         while not exit_signal:
             grab_status = zed.grab(runtime_params)
             if grab_status != sl.ERROR_CODE.SUCCESS:
                 consecutive_grab_failures += 1
-                if consecutive_grab_failures >= _MAX_GRAB_FAILURES:
-                    print(f'[Vision] {_MAX_GRAB_FAILURES} consecutive grab failures — exiting')
-                    exit_signal = True
-                    break
+                if consecutive_grab_failures >= _GRAB_FAILS_BEFORE_REOPEN:
+                    # Camera likely disconnected mid-run. Tear down and reopen
+                    # (with retry) instead of exiting, so the stream recovers on
+                    # reconnect — no need to restart the script or the AUV.
+                    print(f'[Vision] {consecutive_grab_failures} grab failures '
+                          f'({grab_status}) — camera lost. Recovering (reopen)…')
+                    try:
+                        if object_detection_enabled:
+                            zed.disable_object_detection()
+                        if positional_tracking_enabled:
+                            zed.disable_positional_tracking()
+                    except Exception:
+                        pass
+                    try:
+                        zed.close()
+                    except Exception:
+                        pass
+                    gc.collect()
+                    init_params = _open_zed_with_retry(
+                        zed, input_type, init_candidates)
+                    if init_params is None:      # exit requested during recovery
+                        break
+                    (has_depth, positional_tracking_enabled,
+                     object_detection_enabled, obj_param) = _enable_zed_features(
+                        zed, init_params)
+                    print('[Vision] camera recovered — resuming stream.')
+                    consecutive_grab_failures = 0
+                    continue
                 sleep(0.005)
                 continue
             consecutive_grab_failures = 0
@@ -871,8 +942,28 @@ def run_detector(node):
 
 
 def main():
+    global exit_signal
     rclpy.init(args=None)
     vision_node = VisionNode()
+
+    # Release the camera cleanly on terminate / hangup / interrupt. SIGHUP is
+    # the key one: when an SSH session drops, the foreground process gets
+    # SIGHUP — without this handler it dies WITHOUT closing the ZED, leaving the
+    # camera locked so the next run fails ("camera stream failed") until a power
+    # cycle. Setting exit_signal lets run_detector's finally close the camera.
+    import signal as _signal
+
+    def _request_shutdown(signum, _frame):
+        global exit_signal
+        print(f'\n[Vision] signal {signum} — releasing camera and exiting.')
+        exit_signal = True
+
+    for _sig in (_signal.SIGINT, _signal.SIGTERM, _signal.SIGHUP):
+        try:
+            _signal.signal(_sig, _request_shutdown)
+        except (ValueError, OSError, AttributeError):
+            pass        # not in main thread / platform lacks the signal
+
     try:
         run_detector(vision_node)
     finally:
