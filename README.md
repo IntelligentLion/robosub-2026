@@ -25,6 +25,7 @@
 - [Installation](#installation)
 - [Usage](#usage)
 - [Depth Hold Tests](#depth-hold-tests)
+- [Isolated Actions & Stage Tests](#isolated-actions--stage-tests)
 - [Behavior Tree Structure](#behavior-tree-structure)
 - [Custom Node Categories](#custom-node-categories)
 - [Development](#development)
@@ -406,6 +407,109 @@ python3 depth_hold_test.py --external-vslam # subscribe to a vslam node you laun
 Use the ZED version when you specifically want to validate vision-based depth
 estimation; use the Pixhawk version for a quick, dependency-light vertical/
 thruster check.
+
+---
+
+## Isolated Actions & Stage Tests
+
+A family of small water-test scripts at the repo root for bringing the sub up
+piece by piece: first **isolated actions** (one motion at a time), then
+**stages** (short scripted sequences), with and without vision. They all share
+one engine, [`field_common.py`](field_common.py), which runs the production
+`mavlink_thruster_control.ThrusterController` in-process and publishes
+`auv_msgs/MovementCommand` with **linear speed ramping**.
+
+> ⚠️ **SAFETY — these ARM the Pixhawk and spin the real thrusters.** Stop
+> `thruster_node` first (the scripts own the serial port in-process). Clear the
+> props, run on a tether, keep the kill switch reachable. Every script
+> stops + disarms on `Ctrl+C` and prompts for a typed `go` (skip with `--yes`).
+> Source the workspace first: `source install/setup.bash`.
+
+### Shared tuning flags
+
+**Every** movement script understands the same speed/ramp knobs, so you can
+tune the motion profile of any action or stage the same way:
+
+| Flag | Meaning |
+|------|---------|
+| `--speed` | Target effort, 0–1 (the headline tuning knob). |
+| `--ramp-up` | Seconds to ramp linearly from 0 → `--speed` (smooth spin-up). |
+| `--ramp-down` | Seconds to ramp `--speed` → 0 at the end of a move. |
+| `--duration` | Seconds to **hold** at target speed (between the ramps). |
+| `--pause` | Seconds of neutral depth-hold after the action ("…and pause"). |
+| `--yes` | Skip the `go` confirmation prompt. |
+
+Ramping is the answer to "tune the speed **and ramping up** of speed": the
+thrusters walk from 0 to `--speed` over `--ramp-up`, hold for `--duration`,
+then ease back down over `--ramp-down`.
+
+### Isolated actions
+
+| Script | Action | Vision? |
+|--------|--------|---------|
+| [`act_forward.py`](act_forward.py) | Move forward, then pause | no |
+| [`act_turn_left.py`](act_turn_left.py) | Turn left (yaw CCW), then pause | no |
+| [`act_strafe_left.py`](act_strafe_left.py) | Strafe left, then pause | no |
+| [`act_strafe_right.py`](act_strafe_right.py) | Strafe right, then pause | no |
+| [`act_center_gate.py`](act_center_gate.py) | Closed-loop yaw to centre on the gate, then pause | **yes** (spawns detector) |
+| [`act_coords.py`](act_coords.py) | Print ZED x/y/z pose — **no arming**, pure readout | ZED only |
+| [`depth_hold_test.py`](depth_hold_test.py) | Submerge + hold depth via **ZED** P-controller | ZED |
+| [`depth_hold_pix_test.py`](depth_hold_pix_test.py) | Submerge + hold depth via **Pixhawk** baro / ALT_HOLD | no |
+
+```bash
+python3 act_forward.py      --speed 0.4 --ramp-up 1.5 --duration 3 --pause 2
+python3 act_turn_left.py    --speed 0.3 --duration 6          # tune for ~90°
+python3 act_strafe_left.py  --speed 0.35 --duration 3
+python3 act_strafe_right.py --speed 0.35 --duration 3
+python3 act_center_gate.py  --speed 0.3 --gain 0.6 --tol 0.08
+python3 act_coords.py                                          # safe, no thrusters
+```
+
+`act_center_gate.py` reads the gate's normalised image centre-x from
+`vision/detections` and yaws with effort proportional to the centring error
+(clamped to `[--min-speed, --speed]`) until within `--tol` or `--timeout`.
+
+### Stages — movements only (no vision)
+
+Timed descent, then the scripted motion. Use these to rehearse a run's motion
+profile and tune speeds/ramps before trusting detection.
+
+| Script | Sequence |
+|--------|----------|
+| [`stage_gate.py`](stage_gate.py) | submerge → pause → forward through gate |
+| [`stage_marker.py`](stage_marker.py) | submerge → pause → around-marker maneuver |
+
+```bash
+python3 stage_gate.py   --submerge-speed 0.4 --submerge-duration 4 \
+                        --speed 0.4 --duration 5
+python3 stage_marker.py --submerge-duration 4 --speed 0.35 \
+                        --leg-duration 3 --turn-duration 6
+```
+
+The around-marker maneuver is open-loop: strafe right → forward → turn left →
+forward → turn left → forward, with `--leg-duration` per straight/strafe leg
+and `--turn-duration` per ~90° turn.
+
+### Stages — movements + detection
+
+Same sequences, but the descent runs **until the target is detected** on
+`vision/detections` or a timeout expires. These spawn the TensorRT detector
+in-process (one command does everything).
+
+| Script | Sequence |
+|--------|----------|
+| [`stage_gate_detect.py`](stage_gate_detect.py) | submerge **until gate detected / timeout** → pause → forward through gate |
+| [`stage_marker_detect.py`](stage_marker_detect.py) | submerge **until marker detected / timeout** → pause → around-marker |
+
+```bash
+python3 stage_gate_detect.py   --submerge-speed 0.4 --gate-timeout 25 \
+                               --speed 0.4 --duration 5
+python3 stage_marker_detect.py --submerge-speed 0.4 --marker-timeout 25 \
+                               --speed 0.35 --leg-duration 3 --turn-duration 6
+```
+
+`--conf` sets the minimum detection confidence; `--label` overrides the
+detection class (`gate` / `marker` by default).
 
 ---
 
