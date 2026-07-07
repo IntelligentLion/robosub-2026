@@ -20,14 +20,26 @@ Modes:
 """
 
 import math
+import time
 import rclpy
 from rclpy.node import Node
+from rcl_interfaces.msg import SetParametersResult
 from geometry_msgs.msg import PoseStamped
 from std_msgs.msg import Float32
 from auv_msgs.msg import (
     MovementCommand,
     NavigationCommand,
     ObjectDetectionArray,
+)
+from control.centering import (
+    CenteringPolicy,
+    DefaultPolicy,
+    TargetState,
+    TargetTracker,
+    centering_errors,
+    clamp,
+    policy_for,
+    shape_surge,
 )
 
 
@@ -38,6 +50,20 @@ def _angle_diff(a, b):
 
 def _is_finite(v):
     return math.isfinite(v)
+
+
+def _pf(value, default):
+    """Coerce a ROS parameter value to float, falling back to default.
+
+    rclpy's ``get_parameter(...).value`` is typed ``Unknown | None`` (and can
+    be None if a param isn't declared), so a bare ``float(...)`` trips the type
+    checker and could raise at runtime on a misconfigured launch. This makes
+    param reads total + robust.
+    """
+    try:
+        return float(value) if value is not None else float(default)
+    except (TypeError, ValueError):
+        return float(default)
 
 
 MAX_DEPTH_M = 4.5
@@ -61,6 +87,18 @@ class PID:
         self._integral = 0.0
         self._prev_error = 0.0
         self._initialized = False
+
+    def set_gains(self, kp=None, ki=None, kd=None, limit=None, i_limit=None):
+        """Live-update gains (called from the on-set-parameters callback).
+
+        Any of kp/ki/kd/limit/i_limit may be None to leave unchanged. This
+        lets you tune at the pool via `ros2 param set` without restarting.
+        """
+        if kp is not None: self.kp = kp
+        if ki is not None: self.ki = ki
+        if kd is not None: self.kd = kd
+        if limit is not None: self.limit = limit
+        if i_limit is not None: self.i_limit = i_limit
 
     def update(self, error, dt):
         if dt <= 0 or dt > 1.0:
@@ -98,6 +136,18 @@ class AutonomousController(Node):
     def __init__(self):
         super().__init__('autonomous_controller')
 
+        # --- Camera + tracker parameters (tunable at runtime) ---
+        # ZED 2i HFOV/VFOV at HD720; used to turn image bearing + range into
+        # metric lateral/vertical offsets (see centering.TargetState).
+        self.declare_parameter('hfov_deg', 110.0)
+        self.declare_parameter('vfov_deg', 70.0)
+        self.declare_parameter('ema_alpha', 0.3)   # weight on the new sample
+        self.declare_parameter('coast_s', 0.6)      # hold through dropouts (s)
+        self._hfov_rad = math.radians(
+            _pf(self.get_parameter('hfov_deg').value, 110.0))
+        self._vfov_rad = math.radians(
+            _pf(self.get_parameter('vfov_deg').value, 70.0))
+
         # --- State ---
         self._mode = 'idle'
         self._target_label = ''
@@ -130,15 +180,39 @@ class AutonomousController(Node):
         self._search_found = False
         self._search_start_time = None
 
-        # PIDs for position/heading control
-        self._pid_x = PID(kp=0.8, ki=0.05, kd=0.2, limit=1.0)
-        self._pid_y = PID(kp=0.8, ki=0.05, kd=0.2, limit=1.0)
-        self._pid_z = PID(kp=1.0, ki=0.1, kd=0.15, limit=1.0)
-        self._pid_yaw = PID(kp=1.2, ki=0.08, kd=0.3, limit=1.0)
+        # PIDs — all gains are ROS parameters (pid_<name>.kp/ki/kd/limit/
+        # i_limit) so they can be tuned LIVE at the pool via
+        #   ros2 param set /autonomous_controller pid_yaw.kp 1.4
+        # without recompiling or restarting. The on-set-parameters callback
+        # (registered below) routes changes to the PID objects immediately.
+        #
+        # Position/heading (station_keep / waypoint / heading_hold):
+        self._pid_x   = self._declare_pid('pid_x',   0.8, 0.05, 0.2,  limit=1.0)
+        self._pid_y   = self._declare_pid('pid_y',   0.8, 0.05, 0.2,  limit=1.0)
+        self._pid_z   = self._declare_pid('pid_z',   1.0, 0.1,  0.15, limit=1.0)
+        self._pid_yaw = self._declare_pid('pid_yaw', 1.2, 0.08, 0.3,  limit=1.0)
+        # Vision centering (track_object): yaw nulls the bearing; strafe nulls
+        # the metric lateral offset; depth nulls the metric vertical offset.
+        # Surge is shaped directly in centering.shape_surge().
+        self._pid_vis_yaw    = self._declare_pid('pid_vis_yaw',    1.5, 0.0, 0.3, limit=0.5)
+        self._pid_vis_strafe = self._declare_pid('pid_vis_strafe', 0.8, 0.0, 0.2, limit=0.4)
+        self._pid_vis_depth  = self._declare_pid('pid_vis_depth',  1.0, 0.0, 0.2, limit=0.4)
 
-        # PIDs for vision-based centering
-        self._pid_vis_x = PID(kp=2.0, ki=0.0, kd=0.5, limit=0.5)
-        self._pid_vis_y = PID(kp=1.5, ki=0.0, kd=0.4, limit=0.4)
+        self._pid_map = {
+            'pid_x': self._pid_x, 'pid_y': self._pid_y,
+            'pid_z': self._pid_z, 'pid_yaw': self._pid_yaw,
+            'pid_vis_yaw': self._pid_vis_yaw,
+            'pid_vis_strafe': self._pid_vis_strafe,
+            'pid_vis_depth': self._pid_vis_depth,
+        }
+
+        # Centering framework state (set up when entering track_object).
+        self._policy: CenteringPolicy = DefaultPolicy()
+        self._tracker = TargetTracker(
+            alpha=_pf(self.get_parameter('ema_alpha').value, 0.3),
+            coast_s=_pf(self.get_parameter('coast_s').value, 0.6),
+        )
+        self._converge_count = 0
 
         self._last_tick = self.get_clock().now()
 
@@ -157,6 +231,8 @@ class AutonomousController(Node):
 
         # --- Control loop ---
         self.create_timer(1.0 / self.CONTROL_HZ, self._control_tick)
+        # Live PID/camera tuning: route `ros2 param set` changes to objects.
+        self.add_on_set_parameters_callback(self._on_params_changed)
 
         self.get_logger().info('Autonomous controller started')
 
@@ -172,6 +248,10 @@ class AutonomousController(Node):
                 new_mode = 'idle'
 
             old_mode = self._mode
+            # Clear any axis state persisted from the previous mode (e.g. an
+            # `axes` setpoint leaves surge/strafe engaged until overwritten).
+            if old_mode != new_mode:
+                self._send_stop()
 
             self._mode = new_mode
             self._target_label = msg.target_label
@@ -195,8 +275,8 @@ class AutonomousController(Node):
             if new_mode in ('search', 'track_object'):
                 self._search_found = False
                 self._search_start_time = self.get_clock().now()
-                self._pid_vis_x.reset()
-                self._pid_vis_y.reset()
+                if new_mode == 'track_object':
+                    self._enter_track_object()
 
             if new_mode == 'idle':
                 self._send_stop()
@@ -246,6 +326,61 @@ class AutonomousController(Node):
 
     # ─── Helpers ────────────────────────────────────────────────────
 
+    def _declare_pid(self, prefix, kp, ki, kd, limit=1.0, i_limit=0.3):
+        """Declare kp/ki/kd/limit/i_limit params for `prefix` and build a PID.
+
+        Gains are re-read live by :meth:`_on_params_changed`, so
+        ``ros2 param set /autonomous_controller pid_yaw.kp 1.4`` takes effect
+        immediately without restarting the node. Defaults below are the
+        hand-tuned starting points; refine them at the pool with tune_pid.py.
+        """
+        self.declare_parameter(f'{prefix}.kp', kp)
+        self.declare_parameter(f'{prefix}.ki', ki)
+        self.declare_parameter(f'{prefix}.kd', kd)
+        self.declare_parameter(f'{prefix}.limit', limit)
+        self.declare_parameter(f'{prefix}.i_limit', i_limit)
+        return self._build_pid(prefix)
+
+    def _build_pid(self, prefix):
+        """Read the current params for `prefix` into a fresh PID."""
+        def g(field, default):
+            return _pf(self.get_parameter(f'{prefix}.{field}').value, default)
+        return PID(
+            kp=g('kp', 0.0), ki=g('ki', 0.0), kd=g('kd', 0.0),
+            limit=g('limit', 1.0), i_limit=g('i_limit', 0.3),
+        )
+
+    def _on_params_changed(self, params):
+        """Live-tune PID gains + camera FOV from `ros2 param set`.
+
+        Called by rclpy whenever parameters change (via ``ros2 param set`` or
+        a launch override). Routes ``pid_<name>.<field>`` to the matching PID
+        and refreshes the camera FOV / tracker smoothing. Returns success so the
+        new values are committed.
+        """
+        result = SetParametersResult(successful=True)
+        for p in params:
+            name = p.name
+            val = p.value
+            if name.startswith('pid_') and '.' in name:
+                prefix, field = name.split('.', 1)
+                pid = self._pid_map.get(prefix)
+                if pid is None or field not in ('kp', 'ki', 'kd', 'limit', 'i_limit'):
+                    continue
+                try:
+                    setattr(pid, field, float(val))
+                except (TypeError, ValueError):
+                    pass
+            elif name == 'hfov_deg':
+                self._hfov_rad = math.radians(_pf(val, 110.0))
+            elif name == 'vfov_deg':
+                self._vfov_rad = math.radians(_pf(val, 70.0))
+            elif name == 'ema_alpha':
+                self._tracker.alpha = max(0.01, min(1.0, _pf(val, 0.3)))
+            elif name == 'coast_s':
+                self._tracker.coast_s = max(0.0, _pf(val, 0.6))
+        return result
+
     def _reset_pids(self):
         self._pid_x.reset()
         self._pid_y.reset()
@@ -255,12 +390,50 @@ class AutonomousController(Node):
     def _send_cmd(self, command, speed=0.0, duration=0.0):
         msg = MovementCommand()
         msg.command = command
-        msg.speed = float(speed)
-        msg.duration = float(duration)
+        try:
+            msg.speed = float(speed)
+            msg.duration = float(duration)
+        except (TypeError, ValueError):
+            # Non-numeric speed/duration (e.g. an unconfigured BT input port)
+            # — fall back to a safe neutral command rather than crashing the
+            # publisher callback, which would stop the sub.
+            msg.speed = 0.0
+            msg.duration = 0.0
         self._cmd_pub.publish(msg)
 
     def _send_stop(self):
         self._send_cmd('stop')
+
+    def _enter_track_object(self):
+        """Set up centering state when entering track_object.
+
+        Called from both _nav_cmd_cb (direct) and _tick_search (when a search
+        acquires the target), so the policy + tracker + PIDs are consistently
+        initialised on every entry into vision-guided centering.
+        """
+        self._pid_vis_yaw.reset()
+        self._pid_vis_strafe.reset()
+        self._pid_vis_depth.reset()
+        self._tracker.reset()
+        self._converge_count = 0
+        self._policy = policy_for(self._target_label, self._approach_dist)
+
+    def _dispatch_setpoint(self, surge, strafe, heave, yaw_rate):
+        """Dispatch a simultaneous 4-axis setpoint (command='axes').
+
+        The vision centerer uses this so yaw + strafe + depth + surge converge
+        together instead of one axis per tick. Each axis is clamped to [-1, 1];
+        the thruster applies all four every control tick (10 Hz).
+        """
+        msg = MovementCommand()
+        msg.command = 'axes'
+        msg.speed = 0.0
+        msg.duration = 0.0
+        msg.surge = clamp(surge, 1.0)
+        msg.strafe = clamp(strafe, 1.0)
+        msg.heave = clamp(heave, 1.0)
+        msg.yaw_rate = clamp(yaw_rate, 1.0)
+        self._cmd_pub.publish(msg)
 
     def _best_detection(self, label, min_conf=0.5):
         age = (self.get_clock().now() - self._det_stamp).nanoseconds / 1e9
@@ -340,64 +513,48 @@ class AutonomousController(Node):
     # ─── Track object (vision-guided) ──────────────────────────────
 
     def _tick_track_object(self, dt):
+        now = time.monotonic()
+
         det = self._best_detection(self._target_label, min_conf=0.50)
+        if det is not None:
+            self._tracker.update(det, now, self._target_label)
 
-        if det is None:
-            self._send_stop()
+        state = self._tracker.state(now)
+        if state is None:
+            # No target and coast window expired — hold position (depth-hold).
+            self._dispatch_setpoint(0.0, 0.0, 0.0, 0.0)
+            self._converge_count = 0
             return
 
-        ex = det.position.x - 0.5
-        ey = det.position.y - 0.5
-        depth_m = det.position.z
+        errs = centering_errors(self._policy, state,
+                                self._hfov_rad, self._vfov_rad)
 
-        h_centered = abs(ex) <= self.CENTER_TOL
-        v_centered = abs(ey) <= self.CENTER_TOL
+        lim = self._max_speed
+        yaw_cmd = (self._pid_vis_yaw.update(errs.yaw_err, dt)
+                   if self._policy.use_yaw else 0.0)
+        strafe_cmd = (self._pid_vis_strafe.update(errs.strafe_err, dt)
+                      if self._policy.use_strafe else 0.0)
+        depth_cmd = (self._pid_vis_depth.update(errs.depth_err, dt)
+                     if self._policy.use_depth else 0.0)
+        surge_cmd = shape_surge(self._policy, errs)
 
-        # Check if close enough to stop
-        close_enough = False
-        if depth_m > 0 and depth_m <= self._approach_dist:
-            close_enough = True
-        elif depth_m <= 0 and det.bbox_width >= 0.35:
-            close_enough = True
+        # Depth and strafe run a bit slower than surge/yaw for stability.
+        yaw_cmd = clamp(yaw_cmd, lim)
+        strafe_cmd = clamp(strafe_cmd, lim * 0.7)
+        depth_cmd = clamp(depth_cmd, lim * 0.6)
+        surge_cmd = clamp(surge_cmd, lim)
 
-        if close_enough and h_centered and v_centered:
-            self._send_stop()
+        if errs.centered:
+            self._converge_count += 1
+        else:
+            self._converge_count = 0
+
+        if self._converge_count >= self._policy.converge_ticks:
+            # Centered + in range, confirmed for N ticks — hold here.
+            self._dispatch_setpoint(0.0, 0.0, 0.0, 0.0)
             return
 
-        # Horizontal centering via yaw/strafe
-        if not h_centered:
-            yaw_cmd = self._pid_vis_x.update(ex, dt)
-            if abs(ex) > 0.20:
-                if yaw_cmd > 0:
-                    self._send_cmd('rotate_cw', min(abs(yaw_cmd), self._max_speed))
-                else:
-                    self._send_cmd('rotate_ccw', min(abs(yaw_cmd), self._max_speed))
-            else:
-                if yaw_cmd > 0:
-                    self._send_cmd('strafe_right', min(abs(yaw_cmd), self._max_speed))
-                else:
-                    self._send_cmd('strafe_left', min(abs(yaw_cmd), self._max_speed))
-            return
-
-        # Vertical centering via depth
-        if not v_centered:
-            depth_cmd = self._pid_vis_y.update(ey, dt)
-            if depth_cmd > 0:
-                self._send_cmd('submerge', min(abs(depth_cmd), self._max_speed * 0.6))
-            else:
-                self._send_cmd('emerge', min(abs(depth_cmd), self._max_speed * 0.6))
-            return
-
-        # Centered — approach if not close enough
-        if not close_enough:
-            if depth_m > 0:
-                remaining = max(0.0, depth_m - self._approach_dist)
-                speed = max(0.12, min(self._max_speed,
-                                      remaining / max(self._approach_dist, 1.0) * 0.5))
-            else:
-                gap = 0.35 - det.bbox_width
-                speed = max(0.12, min(self._max_speed, gap * 3.0))
-            self._send_cmd('surge_forward', speed)
+        self._dispatch_setpoint(surge_cmd, strafe_cmd, depth_cmd, yaw_cmd)
 
     # ─── Search (rotate until found, then track) ───────────────────
 
@@ -421,8 +578,7 @@ class AutonomousController(Node):
         if det is not None:
             self._search_found = True
             self._mode = 'track_object'
-            self._pid_vis_x.reset()
-            self._pid_vis_y.reset()
+            self._enter_track_object()
             self.get_logger().info(
                 f'Search found {self._target_label} — switching to track')
             self._send_stop()
@@ -549,9 +705,14 @@ def main():
                 node._send_stop()
             except Exception:
                 pass
-            node.destroy_node()
-        if rclpy.ok():
+            try:
+                node.destroy_node()
+            except Exception:
+                pass
+        try:
             rclpy.shutdown()
+        except Exception:
+            pass
 
 
 if __name__ == '__main__':

@@ -263,10 +263,14 @@ BT::NodeStatus MoveForward::onRunning() {
 void MoveForward::onHalted() { stop(); }
 
 // AlignGateCenter — hand to autonomous_controller in track_object mode.
+// The controller does simultaneous multi-axis centering + approach (see
+// control/centering.py + autonomous_controller._tick_track_object). This node
+// just gates SUCCESS: declare done only when centered AND at the standoff
+// range, so the gate transit (ForwardTransit) fires from the right place.
 BT::NodeStatus AlignGateCenter::onStart() {
   RCLCPP_INFO(lg(), "[gate] aligning to gate center via vision");
   nav("track_object", "gate", 0.3, 0.8);
-  setDuration(8.0);
+  setDuration(15.0);  // simultaneous center + approach needs more than 8 s
   return BT::NodeStatus::RUNNING;
 }
 BT::NodeStatus AlignGateCenter::onRunning() {
@@ -275,7 +279,14 @@ BT::NodeStatus AlignGateCenter::onRunning() {
     if (MissionIO::get().bestDetection("gate", 0.5, d)) {
       const double ex = d.cx - 0.5;
       const double ey = d.cy - 0.5;
-      if (std::abs(ex) < 0.08 && std::abs(ey) < 0.08) {
+      const bool centered = std::abs(ex) < 0.08 && std::abs(ey) < 0.08;
+      // Standoff passed above (0.8 m). Require centered AND in range;
+      // fall back to the bbox-width proxy when the ZED range is unavailable.
+      const double APPROACH_M = 0.8;
+      const bool in_range = (d.range > 0.0)
+          ? std::abs(d.range - APPROACH_M) < 0.35
+          : d.bbox_w >= 0.30;
+      if (centered && in_range) {
         nav("idle");
         return BT::NodeStatus::SUCCESS;
       }

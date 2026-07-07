@@ -31,7 +31,9 @@ from vision.detector import get_shared_model, detections_to_custom_box
 
 
 _PKG_DIR = os.path.dirname(os.path.abspath(__file__))
-_DEFAULT_ONNX = os.path.join(_PKG_DIR, 'yolov8n.onnx')
+# Downward-facing camera model (RoboSub 2026). Deploy the matching .onnx
+# (and optional .engine) via deploy_model.sh / convert_to_onnx.py.
+_DEFAULT_ONNX = os.path.join(_PKG_DIR, 'dfc_rs_26.onnx')
 
 
 lock = Lock()

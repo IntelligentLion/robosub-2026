@@ -26,13 +26,19 @@ Features
 import glob
 import math
 import time as _time
+from typing import Any
 import rclpy
 from rclpy.node import Node
 from rclpy.duration import Duration
 from auv_msgs.msg import MovementCommand
 
+# pymavlink is an optional dependency: without it the node runs in simulation.
+# mavutil is typed Any so guarded uses aren't flagged; it is only ever
+# accessed when HAS_MAVLINK is True (the simulate fallback prevents any
+# hardware path from running otherwise).
+mavutil: Any = None
 try:
-    from pymavlink import mavutil
+    from pymavlink import mavutil  # type: ignore
     HAS_MAVLINK = True
 except ImportError:
     HAS_MAVLINK = False
@@ -70,7 +76,12 @@ class ThrusterController(Node):
         self.serial_port = self.get_parameter('serial_port').value
         self.baud_rate = self.get_parameter('baud_rate').value
         self.simulate = self.get_parameter('simulate').value
-        self.watchdog_timeout = self.get_parameter('watchdog_timeout').value
+        wd = self.get_parameter('watchdog_timeout').value
+        try:
+            self.watchdog_timeout = (float(wd) if isinstance(wd, (int, float))
+                                     else self.DEFAULT_WATCHDOG_S)
+        except (TypeError, ValueError):
+            self.watchdog_timeout = self.DEFAULT_WATCHDOG_S
 
         # Explicit kwarg overrides the ROS param (which defaults to ALT_HOLD).
         mode_name = (flight_mode
@@ -364,12 +375,17 @@ class ThrusterController(Node):
                 'depth_hold':     self.depth_hold,
             }
 
-            handler = dispatch.get(cmd)
-            if handler is None:
-                self.get_logger().warn(f'Unknown command: "{cmd}" — stopping')
-                self.stop()
-                return
-            handler()
+            if cmd == 'axes':
+                # Closed-loop 4-axis setpoint: all axes at once. Reads the
+                # signed axis fields directly (speed/duration unused).
+                self.set_axes(msg.surge, msg.strafe, msg.heave, msg.yaw_rate)
+            else:
+                handler = dispatch.get(cmd)
+                if handler is None:
+                    self.get_logger().warn(f'Unknown command: "{cmd}" — stopping')
+                    self.stop()
+                    return
+                handler()
 
             if duration > 0.0:
                 self._stop_time = (self.get_clock().now()
@@ -420,6 +436,27 @@ class ThrusterController(Node):
         self.current_z = 500
         self._stop_time = None
 
+    def set_axes(self, surge=0.0, strafe=0.0, heave=0.0, yaw_rate=0.0):
+        """Direct 4-axis setpoint (closed-loop). All axes applied simultaneously.
+
+        This is the native MAVLink manual_control form, used by
+        autonomous_controller's track_object centering. Each field is signed
+        [-1, 1] and clamped here. heave is +down / -up (0 = hold depth).
+        A malformed command is neutralised rather than applying garbage thrust.
+        """
+        try:
+            s = max(-1.0, min(1.0, float(surge)))
+            t = max(-1.0, min(1.0, float(strafe)))
+            h = max(-1.0, min(1.0, float(heave)))
+            r = max(-1.0, min(1.0, float(yaw_rate)))
+        except (TypeError, ValueError):
+            s = t = h = r = 0.0
+        self.current_x = round(s * 1000)
+        self.current_y = round(t * 1000)
+        # heave +down -> z decreases below 500 (matches submerge/emerge)
+        self.current_z = max(0, min(1000, round(500 - h * 500)))
+        self.current_r = round(r * 1000)
+
     # ─── 10 Hz control loop ────────────────────────────────────────────
 
     def _control_loop(self):
@@ -448,10 +485,15 @@ class ThrusterController(Node):
         if not self.connected or self.master is None:
             return
 
-        safe_x = max(-1000, min(1000, int(self.current_x)))
-        safe_y = max(-1000, min(1000, int(self.current_y)))
-        safe_z = max(0,     min(1000, int(self.current_z)))
-        safe_r = max(-1000, min(1000, int(self.current_r)))
+        try:
+            safe_x = max(-1000, min(1000, int(self.current_x)))
+            safe_y = max(-1000, min(1000, int(self.current_y)))
+            safe_z = max(0,     min(1000, int(self.current_z)))
+            safe_r = max(-1000, min(1000, int(self.current_r)))
+        except (TypeError, ValueError):
+            # Axis state somehow non-numeric — neutralise (safety).
+            safe_x = safe_y = safe_r = 0
+            safe_z = 500
 
         try:
             self.master.mav.manual_control_send(
@@ -507,9 +549,14 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
-        if rclpy.ok():
+        try:
             node.destroy_node()
+        except Exception:
+            pass
+        try:
             rclpy.shutdown()
+        except Exception:
+            pass
 
 
 if __name__ == '__main__':

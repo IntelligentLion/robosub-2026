@@ -471,7 +471,9 @@ class VisionNode(Node):
 # ─────────────────────────────────────────────────────────────────────────────
 
 _PKG_DIR = os.path.dirname(os.path.abspath(__file__))
-_DEFAULT_ONNX = os.path.join(_PKG_DIR, 'best.onnx')
+# Forward-facing camera model (RoboSub 2026). Deploy the matching .onnx
+# (and optional .engine) via deploy_model.sh / convert_to_onnx.py.
+_DEFAULT_ONNX = os.path.join(_PKG_DIR, 'ffc_rs_26.onnx')
 
 lock = Lock()
 frame_ready = Event()
