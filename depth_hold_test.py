@@ -200,7 +200,7 @@ def main():
     p = argparse.ArgumentParser(
         description='Submerge a fixed depth using ZED positional tracking, '
                     'then hold (drives REAL Pixhawk thrusters).')
-    p.add_argument('--depth', type=float, default=3.0,
+    p.add_argument('--depth', type=float, default=4.0,
                    help='Target depth in FEET below start (default: 3.0).')
     p.add_argument('--axis', default='y', choices=['x', 'y', 'z'],
                    help='ZED odometry axis that is vertical. ZED Y_UP world '
@@ -208,7 +208,7 @@ def main():
     p.add_argument('--sign', type=float, default=-1.0,
                    help='Multiplier so depth-below-start is POSITIVE while '
                         'descending. Y_UP descend lowers Y → -1.0 (default).')
-    p.add_argument('--kp', type=float, default=1.2,
+    p.add_argument('--kp', type=float, default=0.9,
                    help='Proportional gain (speed per metre of error).')
     p.add_argument('--min-speed', type=float, default=0.12,
                    help='Minimum heave speed when moving (0-1).')
@@ -219,7 +219,7 @@ def main():
                    help='Half-width (m) of the neutral hold band.')
     p.add_argument('--settle-tol', type=float, default=0.08,
                    help='Error (m) under which we declare target reached.')
-    p.add_argument('--max-depth', type=float, default=0.0,
+    p.add_argument('--max-depth', type=float, default=6.0,
                    help='Abort+emerge above this depth (m). 0 → 2× target.')
     p.add_argument('--external-vslam', action='store_true',
                    help='Do NOT spawn the ZED vslam node in-process; subscribe '
@@ -261,6 +261,7 @@ def main():
 
     spin_thread = threading.Thread(target=executor.spin, daemon=True)
     spin_thread.start()
+    time.sleep(10)
 
     try:
         while rclpy.ok():

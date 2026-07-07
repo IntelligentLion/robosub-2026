@@ -49,9 +49,19 @@ DEFAULT_BAUD = 115200
 ALT_HOLD_MODE = 2          # ArduSub custom_mode for ALT_HOLD
 RATE_HZ = 10               # manual_control + heartbeat send rate
 NEUTRAL_Z = 500            # centred vertical stick → ALT_HOLD holds depth
-PRESSURE_MSG_ID = 137      # SCALED_PRESSURE2 (Bar30 external pressure)
 G = 9.80665                # m/s^2
 FEET_TO_M = 0.3048
+
+# Depth/pressure can arrive on any of three messages depending on how the
+# Bar30 is enumerated on the flight controller. On a Pixhawk 2.4.8 the external
+# Bar30 is frequently reported on SCALED_PRESSURE (29) or SCALED_PRESSURE3 (143)
+# rather than SCALED_PRESSURE2 (137) — listening only for 137 is why the old
+# build aborted with "No SCALED_PRESSURE2". We probe all three and use whichever
+# one is actually streaming.
+PRESSURE_TYPES = ('SCALED_PRESSURE2', 'SCALED_PRESSURE', 'SCALED_PRESSURE3')
+PRESSURE_MSG_IDS = {'SCALED_PRESSURE2': 137,
+                    'SCALED_PRESSURE': 29,
+                    'SCALED_PRESSURE3': 143}
 
 
 def connect(port, baud):
@@ -64,42 +74,61 @@ def connect(port, baud):
 
 
 def request_pressure(master, hz=20):
-    """Ask the FC to stream SCALED_PRESSURE2 at ~hz.
+    """Ask the FC to stream all SCALED_PRESSURE* messages at ~hz.
 
     Pixhawk 2.4.8 runs old ArduSub — MAV_CMD_SET_MESSAGE_INTERVAL (511) is
     frequently ignored on those builds, so the deprecated-but-universally-
-    supported REQUEST_DATA_STREAM is the primary path (SCALED_PRESSURE2 rides
-    the EXTRA3 stream). SET_MESSAGE_INTERVAL is sent too as a best-effort on
-    firmware new enough to honour it.
+    supported REQUEST_DATA_STREAM is the primary path (the SCALED_PRESSURE*
+    family rides the EXTRA3 stream). We also kick EXTRA2 + ALL and send a
+    best-effort SET_MESSAGE_INTERVAL per pressure id on firmware new enough to
+    honour it — so the depth message turns up no matter which one the Bar30
+    happens to be wired to.
     """
-    master.mav.request_data_stream_send(
-        master.target_system, master.target_component,
-        mavutil.mavlink.MAV_DATA_STREAM_EXTRA3, hz, 1)   # 1 = start
-    try:
-        interval_us = int(1e6 / hz)
-        master.mav.command_long_send(
-            master.target_system, master.target_component,
-            mavutil.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL,
-            0, PRESSURE_MSG_ID, interval_us, 0, 0, 0, 0, 0)
-    except Exception:
-        pass
+    for stream in (mavutil.mavlink.MAV_DATA_STREAM_EXTRA3,
+                   mavutil.mavlink.MAV_DATA_STREAM_EXTRA2,
+                   mavutil.mavlink.MAV_DATA_STREAM_ALL):
+        master.mav.request_data_stream_send(
+            master.target_system, master.target_component, stream, hz, 1)
+    interval_us = int(1e6 / hz)
+    for msg_id in PRESSURE_MSG_IDS.values():
+        try:
+            master.mav.command_long_send(
+                master.target_system, master.target_component,
+                mavutil.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL,
+                0, msg_id, interval_us, 0, 0, 0, 0, 0)
+        except Exception:
+            pass
 
 
-def read_pressure_pa(master, timeout=1.0):
-    """Block for one SCALED_PRESSURE2 and return absolute pressure in Pa."""
-    msg = master.recv_match(type='SCALED_PRESSURE2', blocking=True,
-                            timeout=timeout)
+def detect_pressure_source(master, timeout=6.0):
+    """Listen briefly and return the FIRST SCALED_PRESSURE* type that streams.
+
+    Returns the matched type name (e.g. 'SCALED_PRESSURE') or None if no
+    pressure message of any kind arrived — which means no depth sensor is
+    reachable on the link.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        msg = master.recv_match(type=PRESSURE_TYPES, blocking=True, timeout=1.0)
+        if msg is not None:
+            return msg.get_type()
+    return None
+
+
+def read_pressure_pa(master, ptype, timeout=1.0):
+    """Block for one pressure message of `ptype` and return abs pressure in Pa."""
+    msg = master.recv_match(type=ptype, blocking=True, timeout=timeout)
     if msg is None:
         return None
     return msg.press_abs * 100.0           # hPa → Pa
 
 
-def latch_surface(master, samples=10):
+def latch_surface(master, ptype, samples=10):
     """Median surface pressure (Pa) as depth-zero baseline."""
     vals = []
     deadline = time.time() + 5.0
     while len(vals) < samples and time.time() < deadline:
-        p = read_pressure_pa(master)
+        p = read_pressure_pa(master, ptype)
         if p is not None:
             vals.append(p)
     if not vals:
@@ -141,11 +170,11 @@ def send_frame(master, z):
         mavutil.mavlink.MAV_AUTOPILOT_INVALID, 0, 0, 0)
 
 
-def drain_depth(master, surface_pa, rho):
-    """Pull all buffered pressure msgs, return latest depth (m) or None."""
+def drain_depth(master, surface_pa, rho, ptype):
+    """Pull all buffered `ptype` msgs, return latest depth (m) or None."""
     depth = None
     while True:
-        msg = master.recv_match(type='SCALED_PRESSURE2', blocking=False)
+        msg = master.recv_match(type=ptype, blocking=False)
         if msg is None:
             break
         depth = (msg.press_abs * 100.0 - surface_pa) / (rho * G)
@@ -199,10 +228,19 @@ def main():
     master = connect(args.port, args.baud)
     request_pressure(master)
 
+    print('Detecting depth/pressure source…')
+    ptype = detect_pressure_source(master)
+    if ptype is None:
+        print('No SCALED_PRESSURE/2/3 of any kind — is the Bar30 depth sensor '
+              'connected and powered on the flight controller? Aborting.')
+        master.close()
+        return 1
+    print(f'Using depth source: {ptype}')
+
     print('Latching surface pressure (stay at surface)…')
-    surface_pa = latch_surface(master)
+    surface_pa = latch_surface(master, ptype)
     if surface_pa is None:
-        print('No SCALED_PRESSURE2 — is the depth sensor connected? Aborting.')
+        print(f'{ptype} stopped streaming during latch — aborting.')
         master.close()
         return 1
     print(f'Surface baseline = {surface_pa:.0f} Pa')
@@ -223,7 +261,7 @@ def main():
     try:
         while True:
             loops += 1
-            d = drain_depth(master, surface_pa, rho)
+            d = drain_depth(master, surface_pa, rho, ptype)
             if d is not None:
                 depth = d
 
@@ -275,7 +313,7 @@ def main():
         print('Surfacing…')
         deadline = time.time() + 30.0
         while time.time() < deadline:
-            d = drain_depth(master, surface_pa, rho)
+            d = drain_depth(master, surface_pa, rho, ptype)
             if d is not None:
                 depth = d
             if depth <= args.deadband:
