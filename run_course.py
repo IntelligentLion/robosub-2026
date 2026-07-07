@@ -37,6 +37,8 @@ import math
 import threading
 import time
 
+from dropper import Dropper
+
 # ============================ CONFIG ========================================
 SERIAL_PORT = '/dev/ttyACM0'
 BAUD_RATE = 115200
@@ -50,7 +52,7 @@ CONFIRM = True            # ask "go" before arming; set False to run immediately
 
 # 1) submerge 5 ft        (z below 500 pushes down)
 SUBMERGE_Z       = 150
-SUBMERGE_TIME    = 1.5
+SUBMERGE_TIME    = 0
 
 # 2) forward 11 ft        (+x forward)
 FWD1_THRUST      = 700
@@ -83,6 +85,11 @@ STRAFE_L2_TIME   = 4.5
 # 9) forward 14 ft
 FWD4_THRUST      = 400
 FWD4_TIME        = 18
+
+# ── Dropper (marker release servo on AUX1) ──────────────────────────────────
+DROPPER_ENABLED = True   # False → never touch the dropper this run
+DROP_AFTER_LEG = 1       # release markers after this leg number (1-based);
+                         # None = carry them the whole course
 
 NEUTRAL_Z = 500          # centred vertical stick (ALT_HOLD holds depth)
 SETTLE_TIME = 0       # neutral depth-hold between legs (0 = chain directly)
@@ -322,8 +329,16 @@ if __name__ == "__main__":
         start_heading_source()
         time.sleep(0.5)
 
-    # Step 2: connect, set mode, arm.
+    # Step 2: connect, prep the dropper (works disarmed), set mode, arm.
     master = connect()
+    dropper = None
+    if DROPPER_ENABLED:
+        dropper = Dropper(master)
+        if dropper.prepare():
+            dropper.hold()          # grip the markers before we get wet
+        else:
+            print("[dropper] prepare failed — drops disabled this run")
+            dropper = None
     set_mode(master, FLIGHT_MODE)
     arm(master)
 
@@ -337,7 +352,14 @@ if __name__ == "__main__":
         for i, (label, x, y, z, r, seconds, is_turn) in enumerate(COURSE):
             target_heading = drive(master, label, x, y, z, r, seconds,
                                     is_turn, target_heading)
-            
+
+            if dropper is not None and DROP_AFTER_LEG == i + 1:
+                print("\n>>> DROP markers")
+                # keepalive holds depth/heading so the pilot-input
+                # failsafe can't fire during the release wait
+                dropper.drop(keepalive=lambda: send_manual_control(
+                    master, 0, 0, NEUTRAL_Z, yaw_trim(target_heading)))
+
             if i < len(COURSE) - 1:
                 settle(master, SETTLE_TIME, target_heading)
         time.sleep(20)
@@ -347,11 +369,16 @@ if __name__ == "__main__":
         print("\nInterrupted — stopping.")
     
     
-    # Step 5: neutral, disarm, clean up.
+    # Step 5: neutral, park dropper, disarm, clean up.
     finally:
         for _ in range(5):
             send_manual_control(master, 0, 0, NEUTRAL_Z, 0)
             time.sleep(0.05)
+        if dropper is not None:
+            try:
+                dropper.rest()   # never leave a stale PWM latched on the pin
+            except Exception as exc:
+                print(f"[dropper] rest failed: {exc}")
         disarm(master)
         stop_heading_source()
     print("Mission complete.")

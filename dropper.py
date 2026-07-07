@@ -124,10 +124,19 @@ class Dropper:
         """Grip the markers. Call before submerging."""
         return self._set_servo(HOLD_PWM)
 
-    def drop(self):
-        """Release the markers, wait DROP_TIME, park back at rest."""
+    def drop(self, keepalive=None):
+        """Release the markers, wait DROP_TIME, park back at rest.
+
+        keepalive: optional zero-arg callable invoked ~10x/s during the wait —
+        pass the mission's manual_control sender so the pilot-input failsafe
+        (3 s) can't fire while we hover over the bin.
+        """
         ok = self._set_servo(RELEASE_PWM)
-        time.sleep(DROP_TIME)
+        t0 = time.time()
+        while time.time() - t0 < DROP_TIME:
+            if keepalive is not None:
+                keepalive()
+            time.sleep(0.1)
         self.rest()
         return ok
 
