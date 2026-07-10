@@ -40,9 +40,13 @@ Horizontal drift (ALT_HOLD holds depth + attitude only, NOT position) is
 countered by an optional ZED 2i station-keeper: the camera's WORLD-frame pose
 feeds a PI controller that commands forward/lateral thrust to hold the latched
 start point. The integral term nulls the steady offset that current, tether
-pull and thruster asymmetry would otherwise leave. Disable with
---no-station-keep. Needs visual texture (works in a pool; blank/dark water
-degrades tracking — the keeper idles when the ZED reports no fix).
+pull and thruster asymmetry would otherwise leave. The same keeper also runs a
+P controller on ZED heading into the yaw (r) channel to hold the latched
+heading — ArduSub's gyro-only yaw (EK3_SRC1_YAW=0) drifts slowly with no
+absolute reference, and this test has no other authority over it. Disable
+station-keep with --no-station-keep, or just yaw hold with --sk-yaw-kp 0. Needs
+visual texture (works in a pool; blank/dark water degrades tracking — the
+keeper idles when the ZED reports no fix).
 
 IMPORTANT: stop thruster_node first — one owner of the Pixhawk serial port.
 Do NOT run vslam_node at the same time — this script opens the ZED itself and
@@ -114,14 +118,17 @@ class StationKeeper:
     whenever tracking is not OK so a lost fix can't wind it up.
     """
 
-    def __init__(self, kp, ki, i_limit, out_max, fps=30):
+    def __init__(self, kp, ki, i_limit, out_max, yaw_kp, yaw_max, fps=30):
         self.kp = kp
         self.ki = ki
         self.i_limit = i_limit
         self.out_max = out_max
+        self.yaw_kp = yaw_kp            # r-channel P gain (units per radian err)
+        self.yaw_max = yaw_max         # r-channel clamp, MANUAL_CONTROL units
         self.fps = fps
         self.available = sl is not None
         self.ref = None                 # (rx, rz) latched world reference
+        self.ref_yaw = None             # latched heading (rad) to hold
         self._lock = threading.Lock()
         self._pose = None               # (x, z, yaw) world, or None
         self._ok = False                # tracking state == OK
@@ -204,10 +211,19 @@ class StationKeeper:
         with self._lock:
             if self._pose is not None and self._ok:
                 self.ref = (self._pose[0], self._pose[1])
+                self.ref_yaw = self._pose[2]
                 self._if = self._ir = 0.0
                 self._last_t = None
                 return True
         return False
+
+    def yaw(self):
+        """Latest ZED heading (rad, +right) or None. Visual ground truth for
+        the yaw-rotation diagnosis: independent of compass and EKF."""
+        with self._lock:
+            if self._pose is not None and self._ok:
+                return self._pose[2]
+        return None
 
     def compute(self):
         """(x_cmd, y_cmd) in MANUAL_CONTROL units toward the reference. Returns
@@ -231,6 +247,21 @@ class StationKeeper:
         xf = clamp(self.kp * fwd_err + self.ki * self._if, -1.0, 1.0)
         yf = clamp(self.kp * right_err + self.ki * self._ir, -1.0, 1.0)
         return int(xf * self.out_max), int(yf * self.out_max)
+
+    def compute_yaw(self):
+        """r-channel command (MANUAL_CONTROL units, +right/CW) to hold the
+        latched heading. Returns 0 with no fix / no ref. Pure P on the shortest
+        angular error — enough to null the slow gyro-only ALT_HOLD yaw drift
+        that this script has no other authority over."""
+        with self._lock:
+            pose, ok, ref_yaw = self._pose, self._ok, self.ref_yaw
+        if pose is None or not ok or ref_yaw is None:
+            return 0
+        err = math.atan2(math.sin(pose[2] - ref_yaw),
+                         math.cos(pose[2] - ref_yaw))   # +ve = turned right
+        # Turned right of ref → command left (negative r) to come back.
+        r = clamp(-self.yaw_kp * err, -1.0, 1.0)
+        return int(r * self.yaw_max)
 
 
 def connect(port, baud):
@@ -356,25 +387,33 @@ def arm(master, armed):
     return ack.result == 0
 
 
-def send_frame(master, z, x=0, y=0):
+def send_frame(master, z, x=0, y=0, r=0):
     """One manual_control frame + GCS heartbeat (failsafe guard). z is vertical
-    (0..1000, 500 neutral); x/y are forward/lateral station-keeping thrust."""
+    (0..1000, 500 neutral); x/y are forward/lateral station-keeping thrust; r is
+    yaw (-1000..1000, +right) holding the latched heading."""
     master.mav.manual_control_send(
-        master.target_system, x=int(x), y=int(y), z=int(z), r=0, buttons=0)
+        master.target_system, x=int(x), y=int(y), z=int(z), r=int(r),
+        buttons=0)
     master.mav.heartbeat_send(
         mavutil.mavlink.MAV_TYPE_GCS,
         mavutil.mavlink.MAV_AUTOPILOT_INVALID, 0, 0, 0)
 
 
 def drain_depth(master, surface_hpa, rho, ptype):
-    """Pull all buffered pressure msgs, return latest depth (m) or None."""
+    """Pull all buffered pressure + attitude msgs. Returns (depth_m, yaw_rad),
+    either None if no fresh message of that kind was buffered. Yaw is the
+    Pixhawk EKF heading (ATTITUDE.yaw) — what ALT_HOLD is actually holding."""
     depth = None
+    yaw = None
     while True:
-        msg = master.recv_match(type=[ptype], blocking=False)
+        msg = master.recv_match(type=[ptype, 'ATTITUDE'], blocking=False)
         if msg is None:
             break
-        depth = (msg.press_abs - surface_hpa) * 100.0 / (rho * G)
-    return depth
+        if msg.get_type() == 'ATTITUDE':
+            yaw = msg.yaw
+        else:
+            depth = (msg.press_abs - surface_hpa) * 100.0 / (rho * G)
+    return depth, yaw
 
 
 def main():
@@ -411,6 +450,11 @@ def main():
                     help='station-keep integral clamp (anti-windup)')
     ap.add_argument('--sk-max', type=int, default=350,
                     help='max station-keep thrust, MANUAL_CONTROL units (<=1000)')
+    ap.add_argument('--sk-yaw-kp', type=float, default=6.0,
+                    help='yaw-hold P gain, out fraction per radian error '
+                         '(~0.10 fraction/deg; 0 disables yaw hold)')
+    ap.add_argument('--sk-yaw-max', type=int, default=250,
+                    help='max yaw-hold thrust, MANUAL_CONTROL units (<=1000)')
     ap.add_argument('--zed-fps', type=int, default=30,
                     help='ZED camera FPS for station-keeping')
     ap.add_argument('--dry-run', action='store_true',
@@ -502,7 +546,8 @@ def main():
     sk = None
     if not args.no_station_keep:
         sk = StationKeeper(args.sk_kp, args.sk_ki, args.sk_i_limit,
-                           args.sk_max, fps=args.zed_fps)
+                           args.sk_max, args.sk_yaw_kp, args.sk_yaw_max,
+                           fps=args.zed_fps)
         if not sk.available:
             print('Station-keep: pyzed not importable — horizontal hold OFF '
                   '(sub will drift). Install ZED SDK or pass --no-station-keep '
@@ -511,7 +556,8 @@ def main():
         elif sk.start():
             if sk.latch():
                 print(f'Station-keep: ZED fix OK, reference latched. '
-                      f'PI kp={args.sk_kp} ki={args.sk_ki} max={args.sk_max}.')
+                      f'PI kp={args.sk_kp} ki={args.sk_ki} max={args.sk_max}. '
+                      f'Yaw hold kp={args.sk_yaw_kp} max={args.sk_yaw_max}.')
             else:
                 print('Station-keep: ZED up but no fix yet — will latch once '
                       'tracking locks.')
@@ -524,21 +570,37 @@ def main():
     aborted = False
     depth = 0.0
     loops = 0
+    # Yaw diagnosis: log Pixhawk EKF yaw vs ZED visual yaw as deltas from
+    # their values at arm. Sub physically turning while pix stays ~0 = EKF
+    # heading is being dragged (compass interference) and ALT_HOLD follows it.
+    pix_yaw = zed_yaw = None
+    pix_yaw0 = zed_yaw0 = None
 
     try:
         while True:
             loops += 1
-            d = drain_depth(master, surface_hpa, rho, ptype)
+            d, py = drain_depth(master, surface_hpa, rho, ptype)
             if d is not None:
                 depth = d
+            if py is not None:
+                pix_yaw = py
+                if pix_yaw0 is None:
+                    pix_yaw0 = py
+            if sk is not None:
+                zy = sk.yaw()
+                if zy is not None:
+                    zed_yaw = zy
+                    if zed_yaw0 is None:
+                        zed_yaw0 = zy
 
             # Horizontal station-keeping (0,0 if disabled / no ZED fix). Latch
             # a reference the moment tracking first locks if we couldn't at arm.
-            xc, yc = 0, 0
+            xc, yc, rc = 0, 0, 0
             if sk is not None:
                 if sk.ref is None:
                     sk.latch()
                 xc, yc = sk.compute()
+                rc = sk.compute_yaw()
 
             # Hard safety aborts: runaway descend, or reading gone implausible
             # (saturation / sensor fault mid-run).
@@ -552,7 +614,7 @@ def main():
                 if depth > args.deadband:
                     send_frame(master,
                                NEUTRAL_Z + round(args.min_speed * 500),
-                               xc, yc)
+                               xc, yc, rc)
                     time.sleep(period)
                     continue
                 break
@@ -572,15 +634,25 @@ def main():
             else:
                 z = NEUTRAL_Z + round(effort * 500)   # ascend
 
-            send_frame(master, z, xc, yc)
+            send_frame(master, z, xc, yc, rc)
 
             if loops % RATE_HZ == 0:        # ~1 Hz telemetry
                 state = ('HOLD' if mag <= args.deadband
                          else 'DESCEND' if error > 0 else 'CORRECT-UP')
-                sk_str = f' sk x={xc:+d} y={yc:+d}' if sk is not None else ''
+                sk_str = (f' sk x={xc:+d} y={yc:+d} r={rc:+d}'
+                          if sk is not None else '')
+
+                def _dyaw(cur, ref):
+                    if cur is None or ref is None:
+                        return '  n/a'
+                    d = math.degrees(math.atan2(math.sin(cur - ref),
+                                                math.cos(cur - ref)))
+                    return f'{d:+5.0f}°'
+                yaw_str = (f' yaw pix={_dyaw(pix_yaw, pix_yaw0)}'
+                           f' zed={_dyaw(zed_yaw, zed_yaw0)}')
                 print(f'[{state}] depth={depth:.2f} m '
                       f'target={target_m:.2f} m err={error:+.2f} m z={z}'
-                      f'{sk_str}')
+                      f'{sk_str}{yaw_str}')
 
             if (reached_at is not None
                     and time.monotonic() - reached_at >= args.hold_duration):
@@ -592,14 +664,15 @@ def main():
         print('Surfacing…')
         deadline = time.time() + 30.0
         while time.time() < deadline:
-            d = drain_depth(master, surface_hpa, rho, ptype)
+            d, _ = drain_depth(master, surface_hpa, rho, ptype)
             if d is not None:
                 depth = d
             xc, yc = sk.compute() if sk is not None else (0, 0)
+            rc = sk.compute_yaw() if sk is not None else 0
             if depth <= args.deadband:
                 break
             send_frame(master, NEUTRAL_Z + round(args.max_speed * 500),
-                       xc, yc)
+                       xc, yc, rc)
             time.sleep(period)
     except KeyboardInterrupt:
         print('\nInterrupted — stopping.')
