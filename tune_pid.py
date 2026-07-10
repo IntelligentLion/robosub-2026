@@ -10,9 +10,14 @@ Subcommands:
 
 import argparse
 import math
+import re
+import subprocess
 import sys
 import time
 from typing import Any
+
+# ROS node that owns the PID parameters (`ros2 param` target).
+CONTROLLER_NODE = "autonomous_controller"
 
 # --------------------------------------------------------------------------- #
 # Default gains — mirrors the controller's live parameter defaults.
@@ -138,36 +143,47 @@ def simulate(gains, mass, drag, setpoint, dt, seconds, angular=False):
     return times, responses
 
 
-def compute_metrics(times, response, setpoint):
-    """Compute step-response metrics. Returns dict."""
-    resp = response
+def compute_metrics(times, response, setpoint, angular=False):
+    """Compute step-response metrics. Returns dict.
+
+    angular=True remaps each sample onto the branch nearest setpoint (via
+    wrap_angle) before any math — otherwise a response crossing the +/-pi
+    seam produces a huge spurious error/overshoot even though the controller
+    is fine."""
+    resp = [setpoint + wrap_angle(r - setpoint) for r in response] if angular else response
     n = len(resp)
     if n == 0:
         return {}
 
-    span = abs(setpoint) if abs(setpoint) > 1e-9 else 1.0
-    thr10 = 0.10 * setpoint
-    thr90 = 0.90 * setpoint
+    # All metrics reference the STEP (initial value y0 -> setpoint), not an
+    # absolute step from zero. Live yaw steps start at cur_yaw (e.g. -2.5 rad),
+    # so scaling by abs(setpoint) makes rise/overshoot/settle nonsense. delta is
+    # the commanded change; span its magnitude (guarded against a zero step).
+    y0 = resp[0]
+    delta = setpoint - y0
+    span = abs(delta) if abs(delta) > 1e-9 else 1.0
 
-    # Rise time 10% -> 90%
+    # Rise time 10% -> 90% of the step. frac = fraction of the step travelled
+    # from y0 toward setpoint; sign-agnostic because we divide by delta.
     t10 = t90 = None
     for i in range(n):
-        if t10 is None and abs(resp[i]) >= abs(thr10):
+        frac = (resp[i] - y0) / delta if abs(delta) > 1e-9 else 0.0
+        if t10 is None and frac >= 0.10:
             t10 = times[i]
-        if t90 is None and abs(resp[i]) >= abs(thr90):
+        if t90 is None and frac >= 0.90:
             t90 = times[i]
             break
     rise_time = (t90 - t10) if (t10 is not None and t90 is not None) else None
 
-    # Overshoot %
-    if setpoint >= 0:
+    # Overshoot %: peak past setpoint in the direction of the step, / step span
+    if delta >= 0:
         peak = max(resp)
         overshoot = max(0.0, (peak - setpoint) / span * 100.0) if span > 0 else 0.0
     else:
         peak = min(resp)
         overshoot = max(0.0, (setpoint - peak) / span * 100.0) if span > 0 else 0.0
 
-    # Settling time (±5%): last time response leaves the band
+    # Settling time (±5% of step span): last time response leaves the band
     band = 0.05 * span
     settle = times[0]
     for i in range(n - 1, -1, -1):
@@ -258,7 +274,7 @@ def cmd_sim(args):
     all_results = []
     for label, gains in runs:
         times, resp = simulate(gains, mass, drag, setpoint, dt, seconds, angular)
-        m = compute_metrics(times, resp, setpoint)
+        m = compute_metrics(times, resp, setpoint, angular=angular)
         all_results.append((label, gains, times, resp, m))
         print("[%s] kp=%.3f ki=%.3f kd=%.3f" % (label, gains[0], gains[1], gains[2]))
         print("  rise_time=%.2fs  overshoot=%.1f%%  settle=%.2fs  ss_err=%.4f  osc_period=%s"
@@ -314,7 +330,7 @@ def cmd_step(args):
         from rclpy.node import Node
         from std_msgs.msg import Float32
         from geometry_msgs.msg import PoseStamped
-        from robosub_msgs.msg import NavigationCommand  # type: ignore[import-not-found]
+        from auv_msgs.msg import NavigationCommand  # type: ignore[import-not-found]
     except ImportError as e:
         print("ERROR: ROS not available (%s). Use 'sim' for offline tuning." % e)
         return 1
@@ -424,7 +440,7 @@ def cmd_step(args):
             print("Wrote %s (%d samples)" % (fname, len(times)))
 
     # Metrics
-    m = compute_metrics(times, responses, target)
+    m = compute_metrics(times, responses, target, angular=(axis == "yaw"))
     print("-" * 60)
     print("rise_time=%s  overshoot=%.1f%%  settle=%s  ss_err=%.4f  osc_period=%s"
           % ("%.2fs" % m["rise_time"] if m["rise_time"] is not None else "n/a",
@@ -468,100 +484,108 @@ def cmd_step(args):
 # --------------------------------------------------------------------------- #
 # Command: set
 # --------------------------------------------------------------------------- #
-def cmd_set(args):
+def _ros2_param_set(node, name, value, timeout=8.0):
+    """Set one ROS param via the `ros2 param set` CLI. Returns (ok, detail).
+
+    Humble's rclpy has no AsyncParameterClient, so shell out to the CLI the
+    controller's own docstring recommends. `ros2 param set` returns non-zero
+    and prints "Setting parameter failed" when the node is down or the param
+    is unknown; we surface stderr so "node not running" is obvious.
+    """
     try:
-        import rclpy
-        from rclpy.node import Node
-        from rclpy.parameter import Parameter
-        from rclpy.parameter_client import AsyncParameterClient  # type: ignore[import-not-found]
-    except ImportError as e:
-        print("ERROR: ROS not available (%s)." % e)
-        return 1
+        proc = subprocess.run(
+            ["ros2", "param", "set", "/%s" % node, name, repr(value)],
+            capture_output=True, text=True, timeout=timeout)
+    except FileNotFoundError:
+        return False, "ros2 CLI not found — source install/setup.bash"
+    except subprocess.TimeoutExpired:
+        return False, "timed out (is /%s running?)" % node
+    out = (proc.stdout + proc.stderr).strip()
+    ok = proc.returncode == 0 and "successful" in proc.stdout.lower()
+    return ok, out
 
-    rclpy.init()
-    node = Node("pid_setter")
-    client = AsyncParameterClient(node, "autonomous_controller")
 
+def cmd_set(args):
+    node = args.node
     prefix = args.pid
     params = []
     for name in ["kp", "ki", "kd", "limit", "i_limit"]:
         val = getattr(args, name)
         if val is not None:
-            # val already typed float by argparse
-            params.append(Parameter("%s.%s" % (prefix, name), value=val))
+            params.append(("%s.%s" % (prefix, name), val))
 
     if not params:
         print("ERROR: specify at least one of --kp/--ki/--kd/--limit/--i_limit")
-        node.destroy_node()
-        rclpy.shutdown()
         return 1
 
-    future = client.set_parameters(params)
-    rclpy.spin_until_future_complete(node, future, timeout_sec=5.0)
-    result = future.result()
-    if future.done() and result is not None:
-        results = result.results
-        ok = all(r.successful for r in results)
+    all_ok = True
+    for name, val in params:
+        ok, detail = _ros2_param_set(node, name, val)
         if ok:
-            print("OK: set %d params on %s:" % (len(params), prefix))
-            for p in params:
-                print("  %s = %s" % (p.name, p.value))
+            print("  OK  %s = %s" % (name, val))
         else:
-            print("WARN: some params failed:")
-            for r in results:
-                if not r.successful:
-                    print("  %s: %s" % (r, r.reason))
-    else:
-        print("ERROR: timed out talking to /autonomous_controller "
-              "(is it running?)")
-
-    node.destroy_node()
-    rclpy.shutdown()
-    return 0
+            all_ok = False
+            print("  FAIL %s = %s : %s" % (name, val, detail))
+    if not all_ok:
+        print("Some params failed — is /%s running? "
+              "(ros2 node list)" % node)
+    return 0 if all_ok else 1
 
 
 # --------------------------------------------------------------------------- #
 # Command: list
 # --------------------------------------------------------------------------- #
-def cmd_list(args):
+def _ros2_param_get(node, name, timeout=8.0):
+    """Read one ROS param via `ros2 param get`. Returns float or None.
+
+    CLI prints e.g. "Double value is: 1.2" / "Integer value is: 3"; we pull
+    the trailing number. None on any error (node down, param unset, non-number).
+    """
     try:
-        import rclpy
-        from rclpy.node import Node
-        from rclpy.parameter_client import AsyncParameterClient  # type: ignore[import-not-found]
-    except ImportError as e:
-        print("ERROR: ROS not available (%s)." % e)
-        return 1
+        proc = subprocess.run(
+            ["ros2", "param", "get", "/%s" % node, name],
+            capture_output=True, text=True, timeout=timeout)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    m = re.search(r"(-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)\s*$", proc.stdout.strip())
+    return float(m.group(1)) if m else None
 
-    rclpy.init()
-    node = Node("pid_lister")
-    client = AsyncParameterClient(node, "autonomous_controller")
 
+def cmd_list(args):
+    node = args.node
     prefixes = ["pid_x", "pid_y", "pid_z", "pid_yaw",
                 "pid_vis_yaw", "pid_vis_strafe", "pid_vis_depth"]
     suffixes = ["kp", "ki", "kd", "limit", "i_limit"]
-    names = ["%s.%s" % (p, s) for p in prefixes for s in suffixes]
 
-    future = client.get_parameters(names)
-    rclpy.spin_until_future_complete(node, future, timeout_sec=5.0)
-    result = future.result()
-    if not future.done() or result is None:
-        print("ERROR: timed out talking to /autonomous_controller "
-              "(is it running?)")
-        node.destroy_node()
-        rclpy.shutdown()
+    values = {}
+    any_ok = False
+    for p in prefixes:
+        for s in suffixes:
+            name = "%s.%s" % (p, s)
+            v = _ros2_param_get(node, name)
+            values[name] = v
+            any_ok = any_ok or v is not None
+
+    if not any_ok:
+        print("ERROR: no params read from /%s — is it running? "
+              "(ros2 node list). If 'ros2' is missing, source "
+              "install/setup.bash." % node)
         return 1
 
-    values = {n: v.value for n, v in zip(names, result.values)}
-    print("%-14s %8s %8s %8s %8s %8s" % ("pid", "kp", "ki", "kd", "limit", "i_lim"))
+    def fmt(v, w, prec):
+        return ("%*.*f" % (w, prec, v)) if v is not None else "%*s" % (w, "n/a")
+
+    print("%-14s %8s %8s %8s %8s %8s"
+          % ("pid", "kp", "ki", "kd", "limit", "i_lim"))
     print("-" * 60)
     for p in prefixes:
-        print("%-14s %8.4f %8.4f %8.4f %8.3f %8.3f" % (
+        print("%-14s %s %s %s %s %s" % (
             p,
-            values["%s.kp" % p], values["%s.ki" % p], values["%s.kd" % p],
-            values["%s.limit" % p], values["%s.i_limit" % p]))
-
-    node.destroy_node()
-    rclpy.shutdown()
+            fmt(values["%s.kp" % p], 8, 4), fmt(values["%s.ki" % p], 8, 4),
+            fmt(values["%s.kd" % p], 8, 4), fmt(values["%s.limit" % p], 8, 3),
+            fmt(values["%s.i_limit" % p], 8, 3)))
     return 0
 
 
@@ -611,6 +635,8 @@ def build_parser():
     pse = sub.add_parser("set", help="Live gain applier (needs ROS).")
     pse.add_argument("--pid", required=True,
                      choices=list(AXIS_PARAM.values()))
+    pse.add_argument("--node", default=CONTROLLER_NODE,
+                     help="ROS node name (default %(default)s)")
     pse.add_argument("--kp", type=float, default=None)
     pse.add_argument("--ki", type=float, default=None)
     pse.add_argument("--kd", type=float, default=None)
@@ -620,6 +646,8 @@ def build_parser():
 
     # list
     pl = sub.add_parser("list", help="Dump current PID params (needs ROS).")
+    pl.add_argument("--node", default=CONTROLLER_NODE,
+                    help="ROS node name (default %(default)s)")
     pl.set_defaults(func=cmd_list)
     return p
 

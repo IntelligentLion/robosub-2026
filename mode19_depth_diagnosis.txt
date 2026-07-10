@@ -1,0 +1,51 @@
+MODE-19 / DEPTH-HOLD SINK DIAGNOSIS
+===================================
+
+MECHANISM (confirmed)
+---------------------
+Mode 19 = MANUAL  (thruster_node.py:64  _MODE_IDS = {STABILIZE:0, ALT_HOLD:2, MANUAL:19})
+
+Heartbeat monitor (thruster_node.py:323) only REACTS: every cycle it finds the
+vehicle in mode 19 and forces it back to ALT_HOLD (2), but the next cycle it is
+19 again. So something EXTERNAL commands MANUAL continuously and keeps winning
+the fight. Nothing in the ROS stack sets MANUAL (grep across src/, tune_pid.py,
+auto_tune_pid.py is clean).
+
+Strongest suspect: an RC transmitter or QGroundControl joystick with the
+flight-mode channel on MANUAL. ArduSub honors an RC/GCS mode switch OVER MAVLink
+set_mode -- classic "software sets ALT_HOLD, pilot's mode switch instantly
+reverts it." Produces exactly the observed 2<->19 ping-pong.
+
+FAILURE CHAIN
+-------------
+external MANUAL cmd -> mode 19 -> ArduSub depth-hold OFF
+  -> neg-buoyant sub sinks 4.7 -> 7.2m -> DEPTH SAFETY spam
+  -> yaw step corrupted (thrusters fighting the sink, not tracking yaw)
+
+This is why the last autotune showed ss_err=2.8 rad (~160 deg), overshoot 1257%.
+Not a metric bug -- the sub physically spun/sank out of control.
+
+DIAGNOSE (do in order, stack down first)
+-----------------------------------------
+1. RC radio on? Turn the transmitter OFF completely. Check its flight-mode
+   switch is not on MANUAL.
+2. QGC open anywhere connected to the sub? Close it (esp. if joystick enabled).
+3. Restart stack, watch for "Mode changed to 19":
+   - Stops   -> that was the source. Fixed.
+   - Still flips -> ArduSub param: check FLTMODE_CH + RC mode-channel mapping
+     (mode switch wired to an RC channel that floats to MANUAL).
+
+THEN verify depth hold BEFORE any tune: sub sits at ~2m in ALT_HOLD, no mode
+warnings, holds 30s+. Only then rerun autotune.
+
+WHAT ALREADY WORKS (this run)
+-----------------------------
+- Metric fix live: rise_time=1.90s now, not 0.00 (step-relative math in
+  tune_pid.py compute_metrics).
+- Runaway guard works: aborted at step 1 (>60% overshoot), restored gains,
+  node survived. No repeat of the node-death.
+
+RERUN COMMAND (after depth hold is stable)
+------------------------------------------
+python3 auto_tune_pid.py --axis yaw --live --iterations 12 --yes
+(step now 0.25 rad ~14 deg; runaway trip at 60% overshoot)

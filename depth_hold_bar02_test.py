@@ -36,16 +36,36 @@ Usage:
     --port           flight-controller serial (default /dev/ttyACM0)
     --dry-run        detect sensor + latch surface, then exit (no arm/motion)
 
+Horizontal drift (ALT_HOLD holds depth + attitude only, NOT position) is
+countered by an optional ZED 2i station-keeper: the camera's WORLD-frame pose
+feeds a PI controller that commands forward/lateral thrust to hold the latched
+start point. The integral term nulls the steady offset that current, tether
+pull and thruster asymmetry would otherwise leave. Disable with
+--no-station-keep. Needs visual texture (works in a pool; blank/dark water
+degrades tracking — the keeper idles when the ZED reports no fix).
+
 IMPORTANT: stop thruster_node first — one owner of the Pixhawk serial port.
+Do NOT run vslam_node at the same time — this script opens the ZED itself and
+one process owns the camera.
 THRUSTERS WILL SPIN. Props clear, tether/bench, kill switch in reach.
 """
 
 import argparse
+import math
 import statistics
 import sys
+import threading
 import time
 
 from pymavlink import mavutil
+
+# ZED 2i positional tracking (station-keeping). Optional: if the SDK/camera is
+# missing the depth test still runs, just without horizontal hold. Same API and
+# coordinate system as src/localization/localization/vslam_node.py.
+try:
+    import pyzed.sl as sl
+except Exception:
+    sl = None
 
 DEFAULT_PORT = '/dev/ttyACM0'
 DEFAULT_BAUD = 115200
@@ -71,6 +91,146 @@ SURFACE_HPA_MAX = 1100.0
 # saturates. Refuse targets near that.
 BAR02_FULL_SCALE_PA = 200000.0
 BAR02_MARGIN_M = 0.5
+
+
+def clamp(v, lo, hi):
+    return lo if v < lo else hi if v > hi else v
+
+
+class StationKeeper:
+    """Hold horizontal position over a latched point using the ZED 2i.
+
+    Opens the ZED directly on a background thread (RIGHT_HANDED_Y_UP, metres —
+    same as vslam_node) and continuously reads the WORLD-frame pose. In this
+    frame the horizontal plane is X (right) and Z (backward); Y is vertical and
+    is left to ALT_HOLD / the depth controller. The control loop calls
+    compute() each tick and gets back (x_cmd, y_cmd) in MANUAL_CONTROL units
+    (forward, right; -1000..1000) that steer the sub back to the reference.
+
+    A PI controller is used on purpose. The P term corrects displacement; the
+    I term removes the *steady-state* offset that a constant disturbance —
+    water current, tether drag, thruster asymmetry — leaves behind, which pure
+    proportional control cannot. Integral is clamped (anti-windup) and frozen
+    whenever tracking is not OK so a lost fix can't wind it up.
+    """
+
+    def __init__(self, kp, ki, i_limit, out_max, fps=30):
+        self.kp = kp
+        self.ki = ki
+        self.i_limit = i_limit
+        self.out_max = out_max
+        self.fps = fps
+        self.available = sl is not None
+        self.ref = None                 # (rx, rz) latched world reference
+        self._lock = threading.Lock()
+        self._pose = None               # (x, z, yaw) world, or None
+        self._ok = False                # tracking state == OK
+        self._stop = False
+        self._if = 0.0                  # integral accumulator, forward
+        self._ir = 0.0                  # integral accumulator, right
+        self._last_t = None
+        self._thread = None
+
+    def start(self, first_fix_timeout=8.0):
+        """Spin up the camera thread; wait briefly for the first good fix."""
+        if not self.available:
+            return False
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+        t0 = time.time()
+        while time.time() - t0 < first_fix_timeout:
+            with self._lock:
+                if self._ok:
+                    return True
+            time.sleep(0.1)
+        with self._lock:
+            return self._ok
+
+    def stop(self):
+        self._stop = True
+
+    @staticmethod
+    def _yaw_from_quat(qx, qy, qz, qw):
+        """Heading about the Y-up axis: angle of body-forward (0,0,-1) rotated
+        into the world, measured as atan2(fx, -fz). Positive = turned right."""
+        fx = -2.0 * (qx * qz + qy * qw)
+        neg_fz = 1.0 - 2.0 * (qx * qx + qy * qy)
+        return math.atan2(fx, neg_fz)
+
+    def _loop(self):
+        cam = None
+        try:
+            init = sl.InitParameters()
+            init.coordinate_units = sl.UNIT.METER
+            init.coordinate_system = sl.COORDINATE_SYSTEM.RIGHT_HANDED_Y_UP
+            init.camera_fps = self.fps
+            cam = sl.Camera()
+            if cam.open(init) != sl.ERROR_CODE.SUCCESS:
+                with self._lock:
+                    self.available = False
+                return
+            cam.enable_positional_tracking(sl.PositionalTrackingParameters())
+            pose = sl.Pose()
+            while not self._stop:
+                if cam.grab() != sl.ERROR_CODE.SUCCESS:
+                    time.sleep(0.005)
+                    continue
+                state = cam.get_position(pose, sl.REFERENCE_FRAME.WORLD)
+                ok = (state == sl.POSITIONAL_TRACKING_STATE.OK)
+                t = pose.get_translation(sl.Translation()).get()
+                o = pose.get_orientation(sl.Orientation()).get()  # qx,qy,qz,qw
+                yaw = self._yaw_from_quat(o[0], o[1], o[2], o[3])
+                with self._lock:
+                    self._pose = (float(t[0]), float(t[2]), yaw)
+                    self._ok = bool(ok)
+        except Exception as e:
+            print(f'StationKeeper: ZED loop error: {e}')
+            with self._lock:
+                self._ok = False
+        finally:
+            if cam is not None:
+                try:
+                    cam.disable_positional_tracking()
+                except Exception:
+                    pass
+                try:
+                    cam.close()
+                except Exception:
+                    pass
+
+    def latch(self):
+        """Latch the current pose as the hold reference. Returns True if a good
+        fix was available."""
+        with self._lock:
+            if self._pose is not None and self._ok:
+                self.ref = (self._pose[0], self._pose[1])
+                self._if = self._ir = 0.0
+                self._last_t = None
+                return True
+        return False
+
+    def compute(self):
+        """(x_cmd, y_cmd) in MANUAL_CONTROL units toward the reference. Returns
+        (0, 0) — and freezes the integral — when there is no fix / no ref."""
+        with self._lock:
+            pose, ok, ref = self._pose, self._ok, self.ref
+        if pose is None or not ok or ref is None:
+            self._last_t = None
+            return 0, 0
+        x, z, yaw = pose
+        rx, rz = ref
+        ex, ez = rx - x, rz - z         # world vector: current -> reference
+        sh, ch = math.sin(yaw), math.cos(yaw)
+        fwd_err = ex * sh - ez * ch     # project onto body forward / right
+        right_err = ex * ch + ez * sh
+        now = time.monotonic()
+        dt = 0.0 if self._last_t is None else now - self._last_t
+        self._last_t = now
+        self._if = clamp(self._if + fwd_err * dt, -self.i_limit, self.i_limit)
+        self._ir = clamp(self._ir + right_err * dt, -self.i_limit, self.i_limit)
+        xf = clamp(self.kp * fwd_err + self.ki * self._if, -1.0, 1.0)
+        yf = clamp(self.kp * right_err + self.ki * self._ir, -1.0, 1.0)
+        return int(xf * self.out_max), int(yf * self.out_max)
 
 
 def connect(port, baud):
@@ -196,10 +356,11 @@ def arm(master, armed):
     return ack.result == 0
 
 
-def send_frame(master, z):
-    """One manual_control vertical frame + GCS heartbeat (failsafe guard)."""
+def send_frame(master, z, x=0, y=0):
+    """One manual_control frame + GCS heartbeat (failsafe guard). z is vertical
+    (0..1000, 500 neutral); x/y are forward/lateral station-keeping thrust."""
     master.mav.manual_control_send(
-        master.target_system, x=0, y=0, z=int(z), r=0, buttons=0)
+        master.target_system, x=int(x), y=int(y), z=int(z), r=0, buttons=0)
     master.mav.heartbeat_send(
         mavutil.mavlink.MAV_TYPE_GCS,
         mavutil.mavlink.MAV_AUTOPILOT_INVALID, 0, 0, 0)
@@ -240,6 +401,18 @@ def main():
                     help='abort+surface past this depth (m). 0 → 2x target')
     ap.add_argument('--water-density', type=float, default=1000.0,
                     help='kg/m^3 (fresh ~1000, salt ~1025)')
+    ap.add_argument('--no-station-keep', action='store_true',
+                    help='disable ZED 2i horizontal position hold (drift free)')
+    ap.add_argument('--sk-kp', type=float, default=0.8,
+                    help='station-keep P gain (out fraction per metre error)')
+    ap.add_argument('--sk-ki', type=float, default=0.15,
+                    help='station-keep I gain (nulls current/tether/asym drift)')
+    ap.add_argument('--sk-i-limit', type=float, default=1.0,
+                    help='station-keep integral clamp (anti-windup)')
+    ap.add_argument('--sk-max', type=int, default=350,
+                    help='max station-keep thrust, MANUAL_CONTROL units (<=1000)')
+    ap.add_argument('--zed-fps', type=int, default=30,
+                    help='ZED camera FPS for station-keeping')
     ap.add_argument('--dry-run', action='store_true',
                     help='detect sensor + latch surface, then exit (no arm)')
     ap.add_argument('--yes', action='store_true', help='skip confirm prompt')
@@ -326,6 +499,26 @@ def main():
         master.close()
         return 1
 
+    sk = None
+    if not args.no_station_keep:
+        sk = StationKeeper(args.sk_kp, args.sk_ki, args.sk_i_limit,
+                           args.sk_max, fps=args.zed_fps)
+        if not sk.available:
+            print('Station-keep: pyzed not importable — horizontal hold OFF '
+                  '(sub will drift). Install ZED SDK or pass --no-station-keep '
+                  'to silence.')
+            sk = None
+        elif sk.start():
+            if sk.latch():
+                print(f'Station-keep: ZED fix OK, reference latched. '
+                      f'PI kp={args.sk_kp} ki={args.sk_ki} max={args.sk_max}.')
+            else:
+                print('Station-keep: ZED up but no fix yet — will latch once '
+                      'tracking locks.')
+        else:
+            print('Station-keep: ZED did not lock in time — horizontal hold '
+                  'idle until it does (sub may drift meanwhile).')
+
     period = 1.0 / RATE_HZ
     reached_at = None
     aborted = False
@@ -339,6 +532,14 @@ def main():
             if d is not None:
                 depth = d
 
+            # Horizontal station-keeping (0,0 if disabled / no ZED fix). Latch
+            # a reference the moment tracking first locks if we couldn't at arm.
+            xc, yc = 0, 0
+            if sk is not None:
+                if sk.ref is None:
+                    sk.latch()
+                xc, yc = sk.compute()
+
             # Hard safety aborts: runaway descend, or reading gone implausible
             # (saturation / sensor fault mid-run).
             if not aborted and (depth > max_depth_m
@@ -350,7 +551,8 @@ def main():
             if aborted:
                 if depth > args.deadband:
                     send_frame(master,
-                               NEUTRAL_Z + round(args.min_speed * 500))
+                               NEUTRAL_Z + round(args.min_speed * 500),
+                               xc, yc)
                     time.sleep(period)
                     continue
                 break
@@ -370,13 +572,15 @@ def main():
             else:
                 z = NEUTRAL_Z + round(effort * 500)   # ascend
 
-            send_frame(master, z)
+            send_frame(master, z, xc, yc)
 
             if loops % RATE_HZ == 0:        # ~1 Hz telemetry
                 state = ('HOLD' if mag <= args.deadband
                          else 'DESCEND' if error > 0 else 'CORRECT-UP')
+                sk_str = f' sk x={xc:+d} y={yc:+d}' if sk is not None else ''
                 print(f'[{state}] depth={depth:.2f} m '
-                      f'target={target_m:.2f} m err={error:+.2f} m z={z}')
+                      f'target={target_m:.2f} m err={error:+.2f} m z={z}'
+                      f'{sk_str}')
 
             if (reached_at is not None
                     and time.monotonic() - reached_at >= args.hold_duration):
@@ -391,9 +595,11 @@ def main():
             d = drain_depth(master, surface_hpa, rho, ptype)
             if d is not None:
                 depth = d
+            xc, yc = sk.compute() if sk is not None else (0, 0)
             if depth <= args.deadband:
                 break
-            send_frame(master, NEUTRAL_Z + round(args.min_speed * 500))
+            send_frame(master, NEUTRAL_Z + round(args.max_speed * 500),
+                       xc, yc)
             time.sleep(period)
     except KeyboardInterrupt:
         print('\nInterrupted — stopping.')
@@ -402,6 +608,8 @@ def main():
             send_frame(master, NEUTRAL_Z)
             time.sleep(0.05)
         arm(master, False)
+        if sk is not None:
+            sk.stop()
         master.close()
     print('Done. Neutral + disarmed.')
     return 0

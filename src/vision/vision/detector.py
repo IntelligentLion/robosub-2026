@@ -18,6 +18,7 @@ import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Point
 from std_msgs.msg import Float32
+from nav_msgs.msg import Odometry
 from auv_msgs.msg import ObjectDetection, ObjectDetectionArray
 
 
@@ -210,6 +211,17 @@ class TensorRTDetector:
         self.input_h = int(in_shape[2])
         self.input_w = int(in_shape[3])
 
+        # Seg model (ffc_rs_26) has a 3rd tensor: output1, the mask-proto
+        # (1,32,104,104). Unused by _parse_yolo, but TRT enqueueV3 refuses to
+        # run unless every output tensor has an address set — allocate a
+        # throwaway device buffer for it too.
+        self._extra_out_names = [
+            self.engine.get_tensor_name(i)
+            for i in range(self.engine.num_io_tensors)
+            if i not in (0, 1)
+        ]
+        self._extra_out_bufs = []
+
         # Pre-allocate persistent CUDA buffers via cuda-python (no torch — the
         # Jetson's torch wheel is CUDA-13 and can't init the 12.6 driver, so we
         # manage device memory natively against the system CUDA 12.6 / TRT 10.3).
@@ -228,6 +240,15 @@ class TensorRTDetector:
 
         self.context.set_tensor_address(self.input_name,  int(self._d_in))
         self.context.set_tensor_address(self.output_name, int(self._d_out))
+
+        for name in self._extra_out_names:
+            shape = self.engine.get_tensor_shape(name)
+            nbytes = 4
+            for d in shape:
+                nbytes *= int(d)
+            buf = _cuda_check(cudart.cudaMalloc(nbytes))
+            self.context.set_tensor_address(name, int(buf))
+            self._extra_out_bufs.append(buf)
 
         # CPU-side pinned-friendly contiguous buffers for host↔device copies.
         self._blob = np.ascontiguousarray(
@@ -292,6 +313,8 @@ class TensorRTDetector:
                 cudart.cudaFree(self._d_in)
             if getattr(self, '_d_out', None) is not None:
                 cudart.cudaFree(self._d_out)
+            for buf in getattr(self, '_extra_out_bufs', []):
+                cudart.cudaFree(buf)
             if getattr(self, '_stream', None) is not None:
                 cudart.cudaStreamDestroy(self._stream)
         except Exception:
@@ -303,8 +326,24 @@ class TensorRTDetector:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _parse_yolo(raw: np.ndarray, conf_thres: float):
+    if raw.ndim == 3 and raw.shape[2] <= raw.shape[1]:
+        # Box-major end2end-NMS export (e.g. ffc_rs_26): (1, num_det, 6+mask) =
+        # [x1, y1, x2, y2, conf, cls_id, mask_coeffs...] already NMS'd on-engine.
+        data = raw[0]
+        boxes_xyxy = data[:, :4]
+        confidences = data[:, 4]
+        class_ids = data[:, 5].astype(np.intp)
+        mask = confidences >= conf_thres
+        boxes_xyxy, class_ids, confidences = (
+            boxes_xyxy[mask], class_ids[mask], confidences[mask])
+        x1, y1, x2, y2 = (boxes_xyxy[:, 0], boxes_xyxy[:, 1],
+                           boxes_xyxy[:, 2], boxes_xyxy[:, 3])
+        boxes_xywh = np.stack(
+            [(x1 + x2) * 0.5, (y1 + y2) * 0.5, x2 - x1, y2 - y1], axis=1)
+        return boxes_xywh, class_ids, confidences
+
     if raw.ndim == 3:
-        data = raw[0].T
+        data = raw[0].T                      # channel-major: (4+nc[+32], anchors)
     elif raw.ndim == 2:
         data = raw
     else:
@@ -438,6 +477,12 @@ class VisionNode(Node):
         super().__init__('vision_node')
         self.publisher_ = self.create_publisher(ObjectDetectionArray, 'vision/detections', 10)
         self.sub_depth_pub_ = self.create_publisher(Float32, 'depth/sub_depth', 10)
+        # Front-cam VIO pose → localization_node (which fuses to
+        # localization/pose). Same topic/frame vslam_node uses, so the front
+        # camera alone can feed the controller without a second ZED session.
+        self.odom_pub_ = self.create_publisher(Odometry, 'vslam/odometry', 10)
+        self._odom_frame = 'odom'
+        self._child_frame = 'zed_left_camera_frame'
 
     def publish_detections(self, infos):
         msg = ObjectDetectionArray()
@@ -464,6 +509,26 @@ class VisionNode(Node):
         msg = Float32()
         msg.data = depth_m
         self.sub_depth_pub_.publish(msg)
+
+    def publish_odometry(self, translation, orientation):
+        """Publish the ZED WORLD pose as nav_msgs/Odometry on vslam/odometry.
+
+        Mirrors vslam_node exactly: RIGHT_HANDED_Y_UP metres, ZED Python
+        orientation ordering (qx, qy, qz, qw). localization_node subscribes
+        this topic and fuses it to localization/pose.
+        """
+        odom = Odometry()
+        odom.header.stamp = self.get_clock().now().to_msg()
+        odom.header.frame_id = self._odom_frame
+        odom.child_frame_id = self._child_frame
+        odom.pose.pose.position.x = float(translation[0])
+        odom.pose.pose.position.y = float(translation[1])
+        odom.pose.pose.position.z = float(translation[2])
+        odom.pose.pose.orientation.x = float(orientation[0])
+        odom.pose.pose.orientation.y = float(orientation[1])
+        odom.pose.pose.orientation.z = float(orientation[2])
+        odom.pose.pose.orientation.w = float(orientation[3])
+        self.odom_pub_.publish(odom)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -898,6 +963,11 @@ def run_detector(node):
                 translation = zed_pose.get_translation(sl.Translation()).get()
                 sub_depth_m = -float(translation[1])
                 node.publish_sub_depth(sub_depth_m)
+                # Same pose, published as full 6-DOF odometry so the front
+                # camera feeds localization/pose (no separate vslam_node / 2nd
+                # ZED session needed).
+                orientation = zed_pose.get_orientation(sl.Orientation()).get()
+                node.publish_odometry(translation, orientation)
 
             node.publish_detections(local_infos)
 

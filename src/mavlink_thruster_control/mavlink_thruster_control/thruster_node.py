@@ -124,6 +124,7 @@ class ThrusterController(Node):
         self._last_cmd_time = None      # watchdog: last command timestamp
         self._watchdog_triggered = False
         self._loop_count = 0            # for periodic debug logging
+        self._mode_revert_count = 0     # consecutive flight-mode rejections
         self._last_log_key = None       # de-dupe repeated Movement log lines
 
         # ── ROS subscriptions & timers ──────────────────────────────────
@@ -290,12 +291,19 @@ class ThrusterController(Node):
         if self.simulate or not self.connected or self.master is None:
             return
         try:
+            # Drain HEARTBEAT for mode/arm state and surface STATUSTEXT —
+            # ArduSub reports mode-change rejections there (e.g. "Depth
+            # sensor is not connected." when ALT_HOLD needs the Bar02).
             hb = None
             for _ in range(100):
                 msg = self.master.recv_match(
-                    type='HEARTBEAT', blocking=False)
+                    type=['HEARTBEAT', 'STATUSTEXT'], blocking=False)
                 if msg is None:
                     break
+                if msg.get_type() == 'STATUSTEXT':
+                    if msg.severity <= 4:   # WARNING or worse
+                        self.get_logger().error(f'ArduSub: {msg.text}')
+                    continue
                 hb = msg
 
             if hb is None:
@@ -321,13 +329,26 @@ class ThrusterController(Node):
                         'Re-arm FAILED – vehicle may not respond')
 
             elif custom_mode != self.flight_mode_id:
-                self.get_logger().warn(
-                    f'Mode changed to {custom_mode} – switching back to '
-                    f'{self.flight_mode_name} ({self.flight_mode_id})')
+                self._mode_revert_count += 1
+                if self._mode_revert_count >= 3:
+                    # Autopilot keeps refusing the mode — for ALT_HOLD this
+                    # means no depth sensor (Bar02 not on I2C): NO depth hold,
+                    # the sub will sink. Escalate instead of warn-spamming.
+                    self.get_logger().error(
+                        f'{self.flight_mode_name} REJECTED {self._mode_revert_count}x '
+                        f'(vehicle stays in mode {custom_mode}). ALT_HOLD needs a '
+                        'working depth sensor — check Bar02 wiring / SCALED_PRESSURE2. '
+                        'Depth hold is NOT active.')
+                else:
+                    self.get_logger().warn(
+                        f'Mode changed to {custom_mode} – switching back to '
+                        f'{self.flight_mode_name} ({self.flight_mode_id})')
                 self.master.mav.set_mode_send(
                     self.master.target_system,
                     mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
                     self.flight_mode_id)
+            else:
+                self._mode_revert_count = 0
 
         except Exception as exc:
             self.get_logger().warn(f'Armed-status check error: {exc}')
