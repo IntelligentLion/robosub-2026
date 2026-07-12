@@ -61,7 +61,7 @@ class ThrusterController(Node):
     # arming (no water/depth sensor) or the ZED depth-hold test, where an
     # external controller must be the sole depth authority.
     DEFAULT_FLIGHT_MODE = 'ALT_HOLD'
-    _MODE_IDS = {'STABILIZE': 0, 'ALT_HOLD': 2, 'MANUAL': 19}
+    _MODE_IDS = {'STABILIZE': 0, 'ACRO': 1, 'ALT_HOLD': 2, 'MANUAL': 19}
 
     def __init__(self, flight_mode=None):
         super().__init__('thruster_controller')
@@ -118,6 +118,10 @@ class ThrusterController(Node):
         self.current_y = 0      # strafe  (-1000 … 1000)
         self.current_z = 500    # depth   (0 … 1000, 500 = neutral)
         self.current_r = 0      # yaw     (-1000 … 1000)
+        # MANUAL_CONTROL MAVLink2 extension axes (Vectored-6DOF frame only;
+        # ArduSub ignores them on frames without roll/pitch authority).
+        self.current_s = 0      # pitch   (-1000 … 1000, +nose-up)
+        self.current_t = 0      # roll    (-1000 … 1000, +right-side-down)
 
         # ── Duration tracking ───────────────────────────────────────────
         self._stop_time = None          # auto-stop deadline
@@ -240,6 +244,41 @@ class ThrusterController(Node):
         except Exception:
             pass
 
+    def set_flight_mode(self, mode_name):
+        """Switch ArduSub flight mode at runtime.
+
+        Style rolls/loops need this: ALT_HOLD and STABILIZE self-level, so
+        they physically fight a continuous roll/pitch — the sub stalls at a
+        modest lean while the tilted depth thrusters shove it sideways.
+        MANUAL (or ACRO) hands the roll/pitch axes straight through.
+
+        Updates the node's target mode so _check_armed_status enforces the
+        NEW mode instead of reverting it 5 s later. No ACK read here — an
+        external streamer (Bar02DepthSource) may own the serial recv path;
+        the armed-status watchdog re-sends the mode if the next heartbeat
+        still shows the old one. Returns True if the request was recorded.
+        """
+        mode_name = mode_name.upper()
+        if mode_name not in self._MODE_IDS:
+            self.get_logger().warn(
+                f'set_flight_mode: unknown mode "{mode_name}" — ignoring')
+            return False
+        self.flight_mode_name = mode_name
+        self.flight_mode_id = self._MODE_IDS[mode_name]
+        self._mode_revert_count = 0
+        self.get_logger().info(f'Flight mode → {mode_name}')
+        if self.simulate or not self.connected or self.master is None:
+            return True
+        try:
+            self.master.mav.set_mode_send(
+                self.master.target_system,
+                mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
+                self.flight_mode_id)
+        except Exception as exc:
+            self.get_logger().warn(f'set_flight_mode send failed: {exc} — '
+                                   'watchdog will retry')
+        return True
+
     def _reconnect_mavlink(self):
         """Close existing link and attempt a fresh connection + arm."""
         if self._reconnecting:
@@ -286,25 +325,49 @@ class ThrusterController(Node):
 
     # ─── Armed-status monitor ──────────────────────────────────────────
 
+    def _passive_heartbeat(self):
+        """Latest HEARTBEAT via master.messages (no serial read). Returns
+        None if stale (>3s). Also surfaces new STATUSTEXT warnings."""
+        st = self.master.messages.get('STATUSTEXT')
+        if st is not None and st.severity <= 4:
+            ts = getattr(st, '_timestamp', 0.0)
+            if ts > getattr(self, '_last_statustext_ts', 0.0):
+                self._last_statustext_ts = ts
+                self.get_logger().error(f'ArduSub: {st.text}')
+        hb = self.master.messages.get('HEARTBEAT')
+        if hb is None or _time.time() - getattr(hb, '_timestamp', 0.0) > 3.0:
+            return None
+        return hb
+
     def _check_armed_status(self):
         """Periodically verify the vehicle is still in the chosen mode & armed."""
         if self.simulate or not self.connected or self.master is None:
             return
         try:
-            # Drain HEARTBEAT for mode/arm state and surface STATUSTEXT —
-            # ArduSub reports mode-change rejections there (e.g. "Depth
-            # sensor is not connected." when ALT_HOLD needs the Bar02).
-            hb = None
-            for _ in range(100):
-                msg = self.master.recv_match(
-                    type=['HEARTBEAT', 'STATUSTEXT'], blocking=False)
-                if msg is None:
-                    break
-                if msg.get_type() == 'STATUSTEXT':
-                    if msg.severity <= 4:   # WARNING or worse
-                        self.get_logger().error(f'ArduSub: {msg.text}')
-                    continue
-                hb = msg
+            if getattr(self.master, '_external_recv_reader', False):
+                # Another thread (e.g. Bar02DepthSource streamer) owns the
+                # serial recv path — reading here too races pyserial
+                # (select/read from two threads → "device reports readiness
+                # to read but returned no data") and steals its messages.
+                # pymavlink stashes the latest of every message type in
+                # master.messages regardless of which thread recv'd it, so
+                # read passively from there instead.
+                hb = self._passive_heartbeat()
+            else:
+                # Drain HEARTBEAT for mode/arm state and surface STATUSTEXT —
+                # ArduSub reports mode-change rejections there (e.g. "Depth
+                # sensor is not connected." when ALT_HOLD needs the Bar02).
+                hb = None
+                for _ in range(100):
+                    msg = self.master.recv_match(
+                        type=['HEARTBEAT', 'STATUSTEXT'], blocking=False)
+                    if msg is None:
+                        break
+                    if msg.get_type() == 'STATUSTEXT':
+                        if msg.severity <= 4:   # WARNING or worse
+                            self.get_logger().error(f'ArduSub: {msg.text}')
+                        continue
+                    hb = msg
 
             if hb is None:
                 return  # no fresh heartbeat — check next cycle
@@ -392,14 +455,19 @@ class ThrusterController(Node):
                 'strafe_right':   lambda: self.strafe(speed),
                 'rotate_cw':      lambda: self.rotate(speed),
                 'rotate_ccw':     lambda: self.rotate(-speed),
+                'pitch_up':       lambda: self.pitch(speed),
+                'pitch_down':     lambda: self.pitch(-speed),
+                'roll_right':     lambda: self.roll(speed),
+                'roll_left':      lambda: self.roll(-speed),
                 'stop':           self.stop,
                 'depth_hold':     self.depth_hold,
             }
 
             if cmd == 'axes':
-                # Closed-loop 4-axis setpoint: all axes at once. Reads the
+                # Closed-loop 6-axis setpoint: all axes at once. Reads the
                 # signed axis fields directly (speed/duration unused).
-                self.set_axes(msg.surge, msg.strafe, msg.heave, msg.yaw_rate)
+                self.set_axes(msg.surge, msg.strafe, msg.heave, msg.yaw_rate,
+                              msg.pitch_rate, msg.roll_rate)
             else:
                 handler = dispatch.get(cmd)
                 if handler is None:
@@ -444,12 +512,22 @@ class ThrusterController(Node):
         """CW (positive) / CCW (negative).  -1.0 … 1.0."""
         self.current_r = round(max(-1.0, min(1.0, speed)) * 1000)
 
+    def pitch(self, speed: float = 0.0):
+        """Nose up (positive) / nose down (negative).  -1.0 … 1.0."""
+        self.current_s = round(max(-1.0, min(1.0, speed)) * 1000)
+
+    def roll(self, speed: float = 0.0):
+        """Right-side down (positive) / left-side down (negative). -1.0 … 1.0."""
+        self.current_t = round(max(-1.0, min(1.0, speed)) * 1000)
+
     def stop(self):
         """Halt all thrusters (neutral on every axis)."""
         self.current_x = 0
         self.current_y = 0
         self.current_z = 500
         self.current_r = 0
+        self.current_s = 0
+        self.current_t = 0
         self._stop_time = None
 
     def depth_hold(self):
@@ -457,26 +535,33 @@ class ThrusterController(Node):
         self.current_z = 500
         self._stop_time = None
 
-    def set_axes(self, surge=0.0, strafe=0.0, heave=0.0, yaw_rate=0.0):
-        """Direct 4-axis setpoint (closed-loop). All axes applied simultaneously.
+    def set_axes(self, surge=0.0, strafe=0.0, heave=0.0, yaw_rate=0.0,
+                 pitch_rate=0.0, roll_rate=0.0):
+        """Direct 6-axis setpoint (closed-loop). All axes applied simultaneously.
 
         This is the native MAVLink manual_control form, used by
         autonomous_controller's track_object centering. Each field is signed
         [-1, 1] and clamped here. heave is +down / -up (0 = hold depth).
-        A malformed command is neutralised rather than applying garbage thrust.
+        pitch_rate/roll_rate go out on the MANUAL_CONTROL extension fields
+        (Vectored-6DOF frame). A malformed command is neutralised rather than
+        applying garbage thrust.
         """
         try:
-            s = max(-1.0, min(1.0, float(surge)))
-            t = max(-1.0, min(1.0, float(strafe)))
+            sg = max(-1.0, min(1.0, float(surge)))
+            st = max(-1.0, min(1.0, float(strafe)))
             h = max(-1.0, min(1.0, float(heave)))
             r = max(-1.0, min(1.0, float(yaw_rate)))
+            p = max(-1.0, min(1.0, float(pitch_rate)))
+            ro = max(-1.0, min(1.0, float(roll_rate)))
         except (TypeError, ValueError):
-            s = t = h = r = 0.0
-        self.current_x = round(s * 1000)
-        self.current_y = round(t * 1000)
+            sg = st = h = r = p = ro = 0.0
+        self.current_x = round(sg * 1000)
+        self.current_y = round(st * 1000)
         # heave +down -> z decreases below 500 (matches submerge/emerge)
         self.current_z = max(0, min(1000, round(500 - h * 500)))
         self.current_r = round(r * 1000)
+        self.current_s = round(p * 1000)
+        self.current_t = round(ro * 1000)
 
     # ─── 10 Hz control loop ────────────────────────────────────────────
 
@@ -511,19 +596,27 @@ class ThrusterController(Node):
             safe_y = max(-1000, min(1000, int(self.current_y)))
             safe_z = max(0,     min(1000, int(self.current_z)))
             safe_r = max(-1000, min(1000, int(self.current_r)))
+            safe_s = max(-1000, min(1000, int(self.current_s)))
+            safe_t = max(-1000, min(1000, int(self.current_t)))
         except (TypeError, ValueError):
             # Axis state somehow non-numeric — neutralise (safety).
-            safe_x = safe_y = safe_r = 0
+            safe_x = safe_y = safe_r = safe_s = safe_t = 0
             safe_z = 500
 
         try:
+            # enabled_extensions bit 0 = pitch (s), bit 1 = roll (t) — MAVLink2
+            # extension fields; ArduSub maps them to the pitch/roll inputs on
+            # 6DOF frames and ignores them elsewhere.
             self.master.mav.manual_control_send(
                 self.master.target_system,
                 x=safe_x,
                 y=safe_y,
                 z=safe_z,
                 r=safe_r,
-                buttons=0)
+                buttons=0,
+                enabled_extensions=0b11,
+                s=safe_s,
+                t=safe_t)
             # Reset error counter on success
             self._consecutive_errors = 0
             # Log values every 2 seconds (every 20th loop at 10 Hz)
@@ -531,7 +624,8 @@ class ThrusterController(Node):
             if self._loop_count % 20 == 0:
                 self.get_logger().info(
                     f'MAVLink TX: x={self.current_x} y={self.current_y} '
-                    f'z={self.current_z} r={self.current_r}')
+                    f'z={self.current_z} r={self.current_r} '
+                    f's={self.current_s} t={self.current_t}')
         except Exception as exc:
             self._consecutive_errors += 1
             self.get_logger().error(
@@ -554,7 +648,8 @@ class ThrusterController(Node):
                 for _ in range(5):
                     self.master.mav.manual_control_send(
                         self.master.target_system,
-                        x=0, y=0, z=500, r=0, buttons=0)
+                        x=0, y=0, z=500, r=0, buttons=0,
+                        enabled_extensions=0b11, s=0, t=0)
                     _time.sleep(0.05)
                 self._disarm_vehicle()
             except Exception:

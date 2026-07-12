@@ -9,7 +9,7 @@ import cv2
 import pyzed.sl as sl
 
 from threading import Event, Lock, Thread
-from time import sleep
+from time import sleep, monotonic
 import threading
 
 from vision.cv_viewer import tracking_viewer as cv_viewer
@@ -98,12 +98,11 @@ class OnnxDetector:
         if len(boxes) == 0:
             return [_EmptyResult()]
 
-        sx = orig_w / self.input_w
-        sy = orig_h / self.input_h
-        boxes[:, 0] *= sx
-        boxes[:, 1] *= sy
-        boxes[:, 2] *= sx
-        boxes[:, 3] *= sy
+        inv_gain = 1.0 / self._gain
+        boxes[:, 0] = (boxes[:, 0] - self._pad_x) * inv_gain
+        boxes[:, 1] = (boxes[:, 1] - self._pad_y) * inv_gain
+        boxes[:, 2] *= inv_gain
+        boxes[:, 3] *= inv_gain
 
         keep = _nms(boxes, confs, iou)
         return [_OnnxResult([
@@ -112,8 +111,9 @@ class OnnxDetector:
         ])]
 
     def _preprocess(self, img: np.ndarray):
-        resized = cv2.resize(img, (self.input_w, self.input_h))
-        blob = resized.astype(np.float32, copy=False)
+        canvas, self._gain, self._pad_x, self._pad_y = _letterbox(
+            img, self.input_w, self.input_h)
+        blob = canvas.astype(np.float32, copy=False)
         blob *= (1.0 / 255.0)
         np.copyto(self._blob, blob.transpose(2, 0, 1)[np.newaxis])
 
@@ -286,10 +286,11 @@ class TensorRTDetector:
         if len(boxes) == 0:
             return [_EmptyResult()]
 
-        sx = orig_w / self.input_w
-        sy = orig_h / self.input_h
-        boxes[:, 0] *= sx;  boxes[:, 1] *= sy
-        boxes[:, 2] *= sx;  boxes[:, 3] *= sy
+        inv_gain = 1.0 / self._gain
+        boxes[:, 0] = (boxes[:, 0] - self._pad_x) * inv_gain
+        boxes[:, 1] = (boxes[:, 1] - self._pad_y) * inv_gain
+        boxes[:, 2] *= inv_gain
+        boxes[:, 3] *= inv_gain
 
         keep = _nms(boxes, confs, iou)
         return [_OnnxResult([
@@ -298,8 +299,9 @@ class TensorRTDetector:
         ])]
 
     def _preprocess(self, img: np.ndarray):
-        resized = cv2.resize(img, (self.input_w, self.input_h))
-        blob = resized.astype(np.float32, copy=False)
+        canvas, self._gain, self._pad_x, self._pad_y = _letterbox(
+            img, self.input_w, self.input_h)
+        blob = canvas.astype(np.float32, copy=False)
         blob *= (1.0 / 255.0)
         np.copyto(self._blob, blob.transpose(2, 0, 1)[np.newaxis])
 
@@ -360,6 +362,21 @@ def _parse_yolo(raw: np.ndarray, conf_thres: float):
 
     mask = confidences >= conf_thres
     return boxes_xywh[mask], class_ids[mask], confidences[mask]
+
+
+def _letterbox(img: np.ndarray, dst_w: int, dst_h: int):
+    """Aspect-preserving resize + gray pad (ultralytics-style). A plain
+    resize squashes 1280x720 → 416x416 (~1.8x horizontal distortion), which
+    the model never saw in training. Returns (canvas, gain, pad_x, pad_y)
+    so predictions can be mapped back to the original frame."""
+    h, w = img.shape[:2]
+    gain = min(dst_w / w, dst_h / h)
+    sw, sh = int(round(w * gain)), int(round(h * gain))
+    resized = cv2.resize(img, (sw, sh))
+    canvas = np.full((dst_h, dst_w, img.shape[2]), 114, dtype=img.dtype)
+    pad_x, pad_y = (dst_w - sw) // 2, (dst_h - sh) // 2
+    canvas[pad_y:pad_y + sh, pad_x:pad_x + sw] = resized
+    return canvas, gain, pad_x, pad_y
 
 
 _NMS_MAX_DETECTIONS = 500
@@ -653,15 +670,21 @@ def inference_thread(weights, img_size, conf_thres=0.2, iou_thres=0.45, device='
 
         try:
             with lock:
-                img = cv2.cvtColor(image_net, cv2.COLOR_RGBA2RGB)
+                # ZED get_data() is BGRA — model was trained on RGB, so the
+                # red/blue swap here matters (RGBA2RGB kept the wrong order
+                # and fed the model channel-swapped images).
+                img = cv2.cvtColor(image_net, cv2.COLOR_BGRA2RGB)
 
             try:
                 if use_onnx:
                     det = model.predict(img, imgsz=img_size, conf=conf_thres, iou=iou_thres)[0].boxes
                 else:
+                    # ultralytics assumes BGR for raw ndarrays and swaps
+                    # internally — hand it BGR so its swap yields RGB.
                     det = model.predict(
-                        img, save=False, imgsz=img_size, conf=conf_thres,
-                        iou=iou_thres, device=inference_device,
+                        img[..., ::-1], save=False, imgsz=img_size,
+                        conf=conf_thres, iou=iou_thres,
+                        device=inference_device,
                     )[0].cpu().numpy().boxes
             except RuntimeError as err:
                 print(f'Inference error: {err}')
@@ -804,10 +827,20 @@ def run_detector(node):
                         help='Show the annotated live OpenCV window. OFF by default — '
                              'on the headless sub the per-frame full-res retrieve + render '
                              '+ GUI pump is wasted work on the Jetson.')
+    parser.add_argument('--save_frames', type=str, default=None,
+                        help='Directory to dump one camera frame per second '
+                             '(JPEG, with detection boxes drawn). Headless '
+                             'alternative to --view for diagnosing what the '
+                             'model actually sees.')
     # Strip ROS args (e.g. `--ros-args -r __node:=vision_node` injected by
     # launch) so argparse only sees the detector's own flags.
     from rclpy.utilities import remove_ros_args
     opt = parser.parse_args(args=remove_ros_args(sys.argv)[1:])
+
+    if opt.save_frames:
+        os.makedirs(opt.save_frames, exist_ok=True)
+        print(f'[Vision] saving 1 annotated frame/s to {opt.save_frames}')
+    last_frame_save = 0.0
 
     onnx_path = opt.onnx
     class_names = None
@@ -958,18 +991,49 @@ def run_detector(node):
                 with lock:
                     local_infos = list(detection_infos)
 
-            if positional_tracking_enabled:
-                zed.get_position(zed_pose, sl.REFERENCE_FRAME.WORLD)
-                translation = zed_pose.get_translation(sl.Translation()).get()
-                sub_depth_m = -float(translation[1])
-                node.publish_sub_depth(sub_depth_m)
-                # Same pose, published as full 6-DOF odometry so the front
-                # camera feeds localization/pose (no separate vslam_node / 2nd
-                # ZED session needed).
-                orientation = zed_pose.get_orientation(sl.Orientation()).get()
-                node.publish_odometry(translation, orientation)
+            try:
+                if positional_tracking_enabled:
+                    zed.get_position(zed_pose, sl.REFERENCE_FRAME.WORLD)
+                    translation = zed_pose.get_translation(sl.Translation()).get()
+                    sub_depth_m = -float(translation[1])
+                    node.publish_sub_depth(sub_depth_m)
+                    # Same pose, published as full 6-DOF odometry so the front
+                    # camera feeds localization/pose (no separate vslam_node /
+                    # 2nd ZED session needed).
+                    orientation = zed_pose.get_orientation(sl.Orientation()).get()
+                    node.publish_odometry(translation, orientation)
 
-            node.publish_detections(local_infos)
+                node.publish_detections(local_infos)
+            except Exception:
+                # Publisher handles get destroyed while this thread is still
+                # mid-loop during shutdown (InvalidHandle) — exit quietly
+                # instead of spamming a traceback.
+                if exit_signal:
+                    break
+                raise
+
+            if opt.save_frames:
+                now = monotonic()
+                if now - last_frame_save >= 1.0:
+                    last_frame_save = now
+                    with lock:
+                        frame = cv2.cvtColor(image_net, cv2.COLOR_BGRA2BGR)
+                    fh, fw = frame.shape[:2]
+                    for info in local_infos:
+                        w = info['bbox_width'] * fw
+                        h = info['bbox_height'] * fh
+                        x0 = int(info['center_x'] * fw - w / 2)
+                        y0 = int(info['center_y'] * fh - h / 2)
+                        cv2.rectangle(frame, (x0, y0),
+                                      (int(x0 + w), int(y0 + h)),
+                                      (0, 255, 0), 2)
+                        cv2.putText(frame,
+                                    f"{info['label']} {info['confidence']:.2f}",
+                                    (x0, max(y0 - 6, 12)),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                                    (0, 255, 0), 2)
+                    cv2.imwrite(f'{opt.save_frames}/frame_{now:.0f}.jpg',
+                                frame)
 
             # Optional live view — OFF by default. On the headless sub this
             # second full-resolution retrieve_image + render_2D + GUI pump runs

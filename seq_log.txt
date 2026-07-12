@@ -1,0 +1,44 @@
+nohup: ignoring input
+[INFO] [1783717393.832013750] [thruster_controller]: Flight mode: ALT_HOLD
+[INFO] [1783717393.834749755] [thruster_controller]: Trying MAVLink on /dev/ttyACM0 …
+[INFO] [1783717393.849720520] [thruster_controller]: MAVLink connected on /dev/ttyACM0  (sysid=1 comp=0)
+[WARN] [1783717396.953944114] [thruster_controller]: No ACK for set_mode – trying anyway
+[INFO] [1783717397.484850148] [thruster_controller]: Arm ACK: result=0
+[INFO] [1783717397.486310649] [thruster_controller]: Vehicle armed
+[INFO] [1783717397.489360962] [thruster_controller]: Thruster controller initialized
+
+⚠ ARMING PIXHAWK — thrusters WILL drive. Keep clear. Ctrl+C to stop + disarm.
+
+[2026-07-10 14:03:17 UTC][ZED][INFO] Logging level INFO
+[2026-07-10 14:03:18 UTC][ZED][INFO] Using USB input... Switched to default resolution HD720
+[2026-07-10 14:03:19 UTC][ZED][INFO] [Init]  Camera successfully opened.
+[2026-07-10 14:03:19 UTC][ZED][INFO] [Init]  Camera FW version: 1523
+[2026-07-10 14:03:19 UTC][ZED][INFO] [Init]  Video mode: HD720@30
+[2026-07-10 14:03:19 UTC][ZED][INFO] [Init]  Serial Number: S/N 31166146
+[2026-07-10 14:03:19 UTC][ZED][INFO] [Init]  Depth mode selected: NONE. Ensure this mode matches your application's performance and accuracy requirements. See https://www.stereolabs.com/docs/depth-sensing/depth-modes for help.
+[2026-07-10 14:03:20 UTC][ZED][WARNING] [Init]  Self-calibration was skipped due to low texture or occlusion in the scene. Tracking accuracy may be affected.
+ZED IMU up — turns closed-loop, IMU in telemetry.
+Detecting depth/pressure source (shared link)…
+[INFO] [1783717401.995110849] [thruster_controller]: MAVLink TX: x=0 y=0 z=500 r=0
+[INFO] [1783717402.497822232] [thruster_controller]: Movement: stop  speed=0.00  dur=0.0s
+[INFO] [1783717402.597994579] [thruster_controller]: Shutting down – sending stop + disarm …
+[INFO] [1783717402.853261146] [thruster_controller]: Disarm command sent
+Done. Neutral + disarmed.
+Traceback (most recent call last):
+  File "/home/robosub/robosub2026/robosub-2026/depth_field_test.py", line 874, in <module>
+    sys.exit(main())
+  File "/home/robosub/robosub2026/robosub-2026/depth_field_test.py", line 828, in main
+    limit = src.setup()
+  File "/home/robosub/robosub2026/robosub-2026/depth_field_test.py", line 215, in setup
+    self.ptype, first = dhb.detect_pressure_source(self.master)
+  File "/home/robosub/robosub2026/robosub-2026/depth_hold_bar02_test.py", line 315, in detect_pressure_source
+    msg = master.recv_match(blocking=True, timeout=1.0)
+  File "/home/robosub/.local/lib/python3.10/site-packages/pymavlink/mavutil.py", line 518, in recv_match
+    m = self.recv_msg()
+  File "/home/robosub/.local/lib/python3.10/site-packages/pymavlink/mavutil.py", line 481, in recv_msg
+    s = self.recv(n)
+  File "/home/robosub/.local/lib/python3.10/site-packages/pymavlink/mavutil.py", line 1008, in recv
+    ret = self.port.read(n)
+  File "/home/robosub/.local/lib/python3.10/site-packages/serial/serialposix.py", line 595, in read
+    raise SerialException(
+serial.serialutil.SerialException: device reports readiness to read but returned no data (device disconnected or multiple access on port?)

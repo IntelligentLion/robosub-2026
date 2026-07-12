@@ -8,8 +8,10 @@ way is invisible from the Python side. This spins ONE motor at a time, forward
 AND reverse, so "bottom-left dead only on descent" narrows to output vs
 direction vs ESC calibration.
 
-Throttle is an ArduSub PERCENT where 50 = stop, >50 = forward, <50 = reverse
-(sub thrusters are bidirectional, trimmed at the PWM midpoint). So a thruster
+--throttle is a PERCENT where 50 = stop, >50 = forward, <50 = reverse (sub
+thrusters are bidirectional, trimmed at the PWM midpoint). It is converted to
+a PWM µs value on the wire: ArduSub only accepts MOTOR_TEST_THROTTLE_PWM and
+rejects the PERCENT type with "bad test type". So a thruster
 that spins at 65% but NOT at 35% is an ESC that never got a bidirectional
 throttle calibration (its reverse half sits in the deadband) — the classic
 "won't move going down" symptom.
@@ -45,7 +47,16 @@ from pymavlink import mavutil
 
 DEFAULT_PORT = '/dev/ttyACM0'
 DEFAULT_BAUD = 115200
-THROTTLE_TYPE_PERCENT = 0        # MOTOR_TEST_THROTTLE_PERCENT
+# ArduSub ONLY accepts MOTOR_TEST_THROTTLE_PWM (type 1) — PERCENT (type 0) is
+# rejected with "bad test type" + result=4 (verified on ArduSub 4.5.7). The
+# user-facing --throttle stays a percent; we convert to µs (50% -> 1500).
+THROTTLE_TYPE_PWM = 1
+PWM_MIN_US, PWM_MAX_US = 1100, 1900
+
+
+def pct_to_pwm(pct):
+    """Map percent (50 = stop, bidirectional) onto 1100-1900 µs."""
+    return int(round(PWM_MIN_US + (PWM_MAX_US - PWM_MIN_US) * pct / 100.0))
 
 
 def connect(port, baud):
@@ -66,34 +77,53 @@ def _drain(master):
         pass
 
 
-def motor_test(master, motor, throttle_pct, duration):
-    """Spin one ArduSub motor (1-based) at PERCENT throttle for `duration` s.
-    Returns the COMMAND_ACK result (0 == accepted) or None if no ack.
+STREAM_PERIOD_S = 0.2   # resend cadence — must stay under ArduSub's 500 ms
 
-    Matches the ack to MAV_CMD_DO_MOTOR_TEST: ArduSub interleaves heartbeats and
-    other acks, and sends this ack around when the test starts, so a plain
-    single-shot recv_match races with unrelated traffic (the classic
-    NO-ACK/REJECTED-alternating symptom)."""
-    _drain(master)
+
+def _send_motor_test(master, motor, throttle_pct):
+    """One DO_MOTOR_TEST frame. ArduSub quirks (verified on 4.5.7 + source):
+
+    * p6 (test order) MUST be MOTOR_TEST_ORDER_BOARD (2) — anything else is
+      rejected with a misleading "bad test type" STATUSTEXT.
+    * p1 (motor) is a 0-BASED motor index on the wire (motor_enabled[]);
+      callers pass the familiar 1-based number and we subtract 1 here.
+    * p4 (timeout) is IGNORED by ArduSub. The test is a dead-man switch: it
+      stops 500 ms after the LAST command, and a lapsed session costs a 10 s
+      re-init cooldown. So a spin is a 5 Hz STREAM of this frame, and a whole
+      sweep must live inside one streamed session (see motor_test()).
+    """
     master.mav.command_long_send(
         master.target_system, master.target_component,
         mavutil.mavlink.MAV_CMD_DO_MOTOR_TEST, 0,
-        motor,                  # p1: motor instance (1-based)
-        THROTTLE_TYPE_PERCENT,  # p2: throttle type
-        throttle_pct,           # p3: throttle value
-        duration,               # p4: timeout / spin time (s)
-        0,                      # p5: motor count (0 = just this one)
-        0,                      # p6: test order
+        motor - 1,                 # p1: motor index (0-based on the wire)
+        THROTTLE_TYPE_PWM,         # p2: throttle type
+        pct_to_pwm(throttle_pct),  # p3: throttle value in µs
+        0,                         # p4: timeout — ignored by ArduSub
+        0,                         # p5: motor count (0 = just this one)
+        mavutil.mavlink.MOTOR_TEST_ORDER_BOARD,  # p6: required
         0)
-    deadline = time.time() + 4
-    while time.time() < deadline:
-        ack = master.recv_match(type='COMMAND_ACK', blocking=True, timeout=1)
-        if ack is None:
-            continue
-        if ack.command == mavutil.mavlink.MAV_CMD_DO_MOTOR_TEST:
-            return ack.result
-        # ack for some other command — keep waiting for ours
-    return None
+
+
+def motor_test(master, motor, throttle_pct, duration):
+    """Spin one motor (1-based) at PERCENT throttle for `duration` s by
+    streaming DO_MOTOR_TEST at 5 Hz (ArduSub dead-man behaviour, see above).
+
+    Returns the first COMMAND_ACK result (0 == accepted), or None if no ack
+    arrived during the whole spin. Keeps draining acks so a stale one from a
+    previous step can't be misread as this step's result."""
+    _drain(master)
+    result = None
+    end = time.time() + max(duration, STREAM_PERIOD_S)
+    while time.time() < end:
+        _send_motor_test(master, motor, throttle_pct)
+        step_end = min(time.time() + STREAM_PERIOD_S, end)
+        while time.time() < step_end:
+            ack = master.recv_match(type='COMMAND_ACK', blocking=True,
+                                    timeout=max(0.01, step_end - time.time()))
+            if (ack is not None and result is None
+                    and ack.command == mavutil.mavlink.MAV_CMD_DO_MOTOR_TEST):
+                result = ack.result
+    return result
 
 
 RESULT_NAMES = {
@@ -130,8 +160,9 @@ def run_step(master, motor, throttle_pct, duration):
         print('accepted — watch the prop')
     else:
         print(f'REJECTED result={res} (armed? safety switch? bad motor num?)')
-    # Spin runs on the FC for `duration`; wait it out plus a settle gap.
-    time.sleep(duration + 0.5)
+    # Settle gap between steps: stream NEUTRAL so the dead-man session stays
+    # alive — a >0.5 s silent gap would end the test and cost a 10 s cooldown.
+    motor_test(master, motor, 50, 0.7)
     return res
 
 
