@@ -484,24 +484,26 @@ def arm(master, armed):
     return ack.result == 0
 
 
-def set_param(master, name, value, retries=3):
-    """Write one parameter and verify by readback. True on success."""
-    for _ in range(retries):
-        master.mav.param_set_send(
-            master.target_system, master.target_component,
-            name.encode('ascii'), float(value),
-            mavutil.mavlink.MAV_PARAM_TYPE_REAL32)
-        deadline = time.monotonic() + 2.0
-        while time.monotonic() < deadline:
-            msg = master.recv_match(type=['PARAM_VALUE'],
-                                    blocking=True, timeout=2)
-            if msg is None:
-                break
-            if msg.param_id == name:
-                if abs(msg.param_value - value) < 0.5:
-                    return True
-                break
-    return False
+def read_param(master, name, timeout=3.0):
+    """Read one parameter's current value. None on timeout/no response.
+
+    Read-only by design: this script must never write flight-controller
+    params at runtime. Ad-hoc runtime overrides from other diagnostic
+    scripts (MOT_x_DIRECTION / SERVOx_REVERSED flips left uncommitted) are
+    exactly what caused a vertical thruster to fight the other three during
+    a dive — see pixhawk_params_4.5.7_backup_2026-07-08.param for the
+    known-good baseline. Persistent tuning changes belong in that param
+    file / QGC, not in a per-run write here.
+    """
+    master.mav.param_request_read_send(
+        master.target_system, master.target_component,
+        name.encode('ascii'), -1)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        msg = master.recv_match(type=['PARAM_VALUE'], blocking=True, timeout=timeout)
+        if msg is not None and msg.param_id == name:
+            return msg.param_value
+    return None
 
 
 def vertical_z(effort, direction):
@@ -562,10 +564,10 @@ def main():
                     help='min vertical effort while moving (0-1)')
     ap.add_argument('--max-speed', type=float, default=0.6,
                     help='max vertical effort (0-1)')
-    ap.add_argument('--descent-rate', type=float, default=25.0,
-                    help='max ALT_HOLD descent rate in cm/s, written to '
-                         'PILOT_SPEED_DN at startup (0 = leave param alone; '
-                         'param default falls back to PILOT_SPEED_UP=100)')
+    ap.add_argument('--expect-descent-rate', type=float, default=25.0,
+                    help='expected PILOT_SPEED_DN (cm/s) on the flight '
+                         'controller; read-only sanity check, warns on '
+                         'mismatch instead of writing (0 = skip check)')
     ap.add_argument('--deadband', type=float, default=0.07,
                     help='half-width (m) of neutral hold band')
     ap.add_argument('--settle-tol', type=float, default=0.1,
@@ -682,13 +684,18 @@ def main():
         print('Aborting — not arming without a verified ALT_HOLD.')
         master.close()
         return 1
-    if args.descent_rate > 0:
-        if set_param(master, 'PILOT_SPEED_DN', args.descent_rate):
-            print(f'PILOT_SPEED_DN = {args.descent_rate:.0f} cm/s '
-                  f'(descent rate cap, persists across reboots).')
+    if args.expect_descent_rate > 0:
+        actual = read_param(master, 'PILOT_SPEED_DN')
+        if actual is None:
+            print('WARNING: could not read PILOT_SPEED_DN — proceeding '
+                  'without confirming descent-rate cap.')
+        elif abs(actual - args.expect_descent_rate) > 0.5:
+            print(f'WARNING: PILOT_SPEED_DN={actual:.0f} cm/s on the flight '
+                  f'controller, expected {args.expect_descent_rate:.0f}. '
+                  f'This script no longer writes params at runtime — fix it '
+                  f'in QGC / the .param backup, not here.')
         else:
-            print('WARNING: PILOT_SPEED_DN write failed — descent will fall '
-                  'back to PILOT_SPEED_UP (100 cm/s = fast).')
+            print(f'PILOT_SPEED_DN = {actual:.0f} cm/s (as expected).')
     time.sleep(0.5)
     if not arm(master, True):
         print('Arm failed — aborting, not driving.')
