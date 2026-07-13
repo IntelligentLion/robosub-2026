@@ -55,13 +55,34 @@ THRUSTERS WILL SPIN. Props clear, tether/bench, kill switch in reach.
 """
 
 import argparse
+import atexit
 import math
+import os
 import statistics
 import sys
 import threading
 import time
+from datetime import datetime
 
 from pymavlink import mavutil
+
+# pymavlink 2.4.49: add_message() raises TypeError ('NoneType' object does not
+# support item assignment) when an instanced message (e.g. SCALED_PRESSURE2)
+# arrives after a cached entry whose _instances is None. The exception escapes
+# recv_match() and kills every recv after it. Drop the stale cache entry and
+# retry instead.
+_orig_add_message = mavutil.add_message
+
+
+def _safe_add_message(messages, mtype, msg):
+    try:
+        _orig_add_message(messages, mtype, msg)
+    except TypeError:
+        messages.pop(mtype, None)
+        _orig_add_message(messages, mtype, msg)
+
+
+mavutil.add_message = _safe_add_message
 
 # ZED 2i positional tracking (station-keeping). Optional: if the SDK/camera is
 # missing the depth test still runs, just without horizontal hold. Same API and
@@ -76,6 +97,9 @@ DEFAULT_BAUD = 115200
 ALT_HOLD_MODE = 2              # ArduSub custom_mode for ALT_HOLD
 RATE_HZ = 10                   # manual_control + heartbeat send rate
 NEUTRAL_Z = 500                # centred vertical stick
+THROTTLE_DZ = 100              # Pixhawk THR_DZ: stick counts around neutral
+                               # that ArduSub treats as zero climb rate. Any
+                               # vertical command must exceed this to act.
 G = 9.80665                    # m/s^2
 FEET_TO_M = 0.3048
 
@@ -99,6 +123,62 @@ BAR02_MARGIN_M = 0.5
 
 def clamp(v, lo, hi):
     return lo if v < lo else hi if v > hi else v
+
+
+def tee_output_to_log(log_dir='logs'):
+    """Mirror stdout+stderr to a timestamped log file for the whole run.
+
+    Tees at the OS file-descriptor level (dup2 onto a pipe drained by a
+    background thread), not by wrapping sys.stdout — the ZED SDK logs from
+    native code straight to fd 1/2, and a Python-level wrapper would miss it.
+    Returns the log file path.
+    """
+    os.makedirs(log_dir, exist_ok=True)
+    path = os.path.join(
+        log_dir, f'depth_hold_{datetime.now():%Y%m%d_%H%M%S}.log')
+    log_f = open(path, 'ab', buffering=0)
+
+    def pump(read_fd, orig_fd):
+        while True:
+            data = os.read(read_fd, 4096)
+            if not data:
+                break
+            os.write(orig_fd, data)
+            log_f.write(data)
+            # fsync every chunk: a power cut (kill switch / brownout) must not
+            # eat the last seconds of the log — that tail is exactly the part
+            # that explains what the sub was doing when power died.
+            os.fsync(log_f.fileno())
+
+    saved = []
+    threads = []
+    for fd in (1, 2):
+        orig = os.dup(fd)
+        r, w = os.pipe()
+        os.dup2(w, fd)
+        os.close(w)
+        t = threading.Thread(target=pump, args=(r, orig), daemon=True)
+        t.start()
+        saved.append((fd, orig))
+        threads.append(t)
+    # fd 1 is now a pipe (not a tty) → Python would switch to block
+    # buffering and telemetry lines would lag; force line buffering back.
+    sys.stdout.reconfigure(line_buffering=True)
+    sys.stderr.reconfigure(line_buffering=True)
+
+    def restore():
+        # Point fds back at the terminal; closing the pipe write ends EOFs
+        # the pump threads so the log gets the final lines before exit.
+        sys.stdout.flush()
+        sys.stderr.flush()
+        for fd, orig in saved:
+            os.dup2(orig, fd)
+        for t in threads:
+            t.join(timeout=1.0)
+        log_f.close()
+
+    atexit.register(restore)
+    return path
 
 
 class StationKeeper:
@@ -337,7 +417,7 @@ def detect_pressure_source(master, timeout=8.0, settle=3.0):
     chosen = next(t for t in preference if t in pressure)
     if chosen == 'SCALED_PRESSURE' and len(pressure) == 1:
         print('WARNING: only the internal FMU baro is streaming — no '
-              'external Bar02 message. Check BARO_PROBE_EXT=512 / '
+              'external Bar02 message. Check BARO_PROBE_EXT=768 / '
               'BARO_EXT_BUS=1 and I2C wiring.')
     return chosen, pressure[chosen]
 
@@ -363,13 +443,30 @@ def surface_sane(hpa):
 
 
 def set_alt_hold(master):
+    """Command ALT_HOLD, then verify the autopilot actually switched by
+    watching heartbeat custom_mode — the ACK alone proves nothing (ArduSub can
+    silently bounce back to MANUAL, e.g. when the Bar02 drops off I2C).
+    Returns True only once a heartbeat reports ALT_HOLD."""
     master.mav.set_mode_send(
         master.target_system,
         mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
         ALT_HOLD_MODE)
     ack = master.recv_match(type=['COMMAND_ACK'], blocking=True, timeout=3)
     print(f'ALT_HOLD ACK: result={ack.result}' if ack
-          else 'No ACK for set_mode — continuing')
+          else 'No ACK for set_mode — verifying via heartbeat…')
+    hb = None
+    deadline = time.time() + 5.0
+    while time.time() < deadline:
+        hb = master.recv_match(type=['HEARTBEAT'], blocking=True, timeout=1)
+        if hb is not None and hb.custom_mode == ALT_HOLD_MODE:
+            print('Mode verified: ALT_HOLD active.')
+            return True
+    print(f'MODE VERIFY FAILED: autopilot is not in ALT_HOLD '
+          f'(last heartbeat custom_mode='
+          f'{hb.custom_mode if hb else "none received"}). '
+          f'Depth hold would not work — check the Bar02 (mode 19 = MANUAL '
+          f'forced because the depth sensor is gone).')
+    return False
 
 
 def arm(master, armed):
@@ -385,6 +482,35 @@ def arm(master, armed):
     print(f'{label} ACK: result={ack.result}'
           + ('' if ack.result == 0 else '  REJECTED — check pre-arm/safety'))
     return ack.result == 0
+
+
+def set_param(master, name, value, retries=3):
+    """Write one parameter and verify by readback. True on success."""
+    for _ in range(retries):
+        master.mav.param_set_send(
+            master.target_system, master.target_component,
+            name.encode('ascii'), float(value),
+            mavutil.mavlink.MAV_PARAM_TYPE_REAL32)
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            msg = master.recv_match(type=['PARAM_VALUE'],
+                                    blocking=True, timeout=2)
+            if msg is None:
+                break
+            if msg.param_id == name:
+                if abs(msg.param_value - value) < 0.5:
+                    return True
+                break
+    return False
+
+
+def vertical_z(effort, direction):
+    """Map an effort fraction (0..1) to a manual_control z that actually
+    exceeds the ALT_HOLD stick deadzone (THR_DZ). Effort then scales the
+    commanded climb rate linearly: rate = effort * PILOT_SPEED_DN/UP.
+    direction: -1 descend, +1 ascend."""
+    offset = THROTTLE_DZ + effort * (500 - THROTTLE_DZ)
+    return NEUTRAL_Z + direction * round(clamp(offset, 0, 500))
 
 
 def send_frame(master, z, x=0, y=0, r=0):
@@ -428,10 +554,18 @@ def main():
                     help='seconds to hold once target reached (default 20)')
     ap.add_argument('--kp', type=float, default=2.0,
                     help='gain: climb-rate fraction per metre of error')
+    ap.add_argument('--speed', type=float, default=1.0,
+                    help='overall vertical strength scale 0-1: multiplies '
+                         'every vertical effort (descend, correct, surface). '
+                         'e.g. 0.5 = half speed (default 1.0)')
     ap.add_argument('--min-speed', type=float, default=0.15,
                     help='min vertical effort while moving (0-1)')
     ap.add_argument('--max-speed', type=float, default=0.6,
                     help='max vertical effort (0-1)')
+    ap.add_argument('--descent-rate', type=float, default=25.0,
+                    help='max ALT_HOLD descent rate in cm/s, written to '
+                         'PILOT_SPEED_DN at startup (0 = leave param alone; '
+                         'param default falls back to PILOT_SPEED_UP=100)')
     ap.add_argument('--deadband', type=float, default=0.07,
                     help='half-width (m) of neutral hold band')
     ap.add_argument('--settle-tol', type=float, default=0.1,
@@ -462,10 +596,17 @@ def main():
     ap.add_argument('--yes', action='store_true', help='skip confirm prompt')
     args = ap.parse_args()
 
+    log_path = tee_output_to_log()
+    print(f'Logging this run to {log_path}')
+    argv = ' '.join(sys.argv[1:]) or '(default args)'
+    print(f'Run started {datetime.now():%Y-%m-%d %H:%M:%S} — args: {argv}')
+
     if args.depth <= 0:
         ap.error('--depth must be > 0')
     if not 0.0 < args.min_speed <= args.max_speed <= 1.0:
         ap.error('need 0 < --min-speed <= --max-speed <= 1')
+    if not 0.0 < args.speed <= 1.0:
+        ap.error('--speed must be in (0, 1]')
 
     target_m = args.depth * FEET_TO_M
     max_depth_m = args.max_depth if args.max_depth > 0 else 2.0 * target_m
@@ -489,7 +630,7 @@ def main():
     if ptype is None:
         print('No SCALED_PRESSURE/2/3 arrived. Since test_pixhawk.py saw '
               'SCALED_PRESSURE2, re-check wiring/params only if it now fails '
-              'too: Bar02 on external I2C, BARO_PROBE_EXT=512, '
+              'too: Bar02 on external I2C, BARO_PROBE_EXT=768, '
               'BARO_EXT_BUS=1, reboot after. Aborting.')
         master.close()
         return 1
@@ -529,6 +670,7 @@ def main():
 
     print(f'\nWILL SUBMERGE to {target_m:.2f} m ({args.depth:.1f} ft) via '
           f'ALT_HOLD, hold {args.hold_duration:.0f}s, then surface. '
+          f'Vertical strength scale --speed={args.speed:.2f}. '
           f'THRUSTERS WILL SPIN.')
     if not args.yes:
         if input('Props clear? type "go" to run: ').strip().lower() != 'go':
@@ -536,7 +678,17 @@ def main():
             master.close()
             return 1
 
-    set_alt_hold(master)
+    if not set_alt_hold(master):
+        print('Aborting — not arming without a verified ALT_HOLD.')
+        master.close()
+        return 1
+    if args.descent_rate > 0:
+        if set_param(master, 'PILOT_SPEED_DN', args.descent_rate):
+            print(f'PILOT_SPEED_DN = {args.descent_rate:.0f} cm/s '
+                  f'(descent rate cap, persists across reboots).')
+        else:
+            print('WARNING: PILOT_SPEED_DN write failed — descent will fall '
+                  'back to PILOT_SPEED_UP (100 cm/s = fast).')
     time.sleep(0.5)
     if not arm(master, True):
         print('Arm failed — aborting, not driving.')
@@ -613,7 +765,7 @@ def main():
             if aborted:
                 if depth > args.deadband:
                     send_frame(master,
-                               NEUTRAL_Z + round(args.min_speed * 500),
+                               vertical_z(args.speed * args.min_speed, +1),
                                xc, yc, rc)
                     time.sleep(period)
                     continue
@@ -621,7 +773,8 @@ def main():
 
             error = target_m - depth        # +ve → need to go deeper
             mag = abs(error)
-            effort = max(args.min_speed, min(args.max_speed, args.kp * mag))
+            effort = args.speed * max(args.min_speed,
+                                      min(args.max_speed, args.kp * mag))
 
             if mag <= args.deadband:
                 z = NEUTRAL_Z               # ALT_HOLD locks current depth
@@ -630,9 +783,9 @@ def main():
                     print(f'✓ Reached {depth:.2f} m — holding '
                           f'{args.hold_duration:.0f}s via ALT_HOLD.')
             elif error > 0:
-                z = NEUTRAL_Z - round(effort * 500)   # descend
+                z = vertical_z(effort, -1)            # descend
             else:
-                z = NEUTRAL_Z + round(effort * 500)   # ascend
+                z = vertical_z(effort, +1)            # ascend
 
             send_frame(master, z, xc, yc, rc)
 
@@ -671,7 +824,8 @@ def main():
             rc = sk.compute_yaw() if sk is not None else 0
             if depth <= args.deadband:
                 break
-            send_frame(master, NEUTRAL_Z + round(args.max_speed * 500),
+            send_frame(master,
+                       vertical_z(args.speed * args.max_speed, +1),
                        xc, yc, rc)
             time.sleep(period)
     except KeyboardInterrupt:

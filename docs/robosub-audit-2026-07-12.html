@@ -1,0 +1,516 @@
+<title>RoboSub 2026 — Codebase Audit</title>
+<style>
+:root{
+  --bg:#f6f7f8; --surface:#ffffff; --ink:#1c2126; --muted:#5a646e; --line:#dde2e6;
+  --accent:#0e6e6a; --accent-ink:#0a5450;
+  --crit:#b52a1e; --high:#c2610a; --med:#9a7b00; --low:#5a646e;
+  --crit-bg:#faeae8; --high-bg:#faf0e4; --med-bg:#f8f4e0; --low-bg:#eef0f2;
+  --code-bg:#eef0f2;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#14181c; --surface:#1c2127; --ink:#e4e8ec; --muted:#98a3ad; --line:#2c333a;
+    --accent:#4cc4be; --accent-ink:#6ad4ce;
+    --crit:#f07264; --high:#eda15c; --med:#d9c258; --low:#98a3ad;
+    --crit-bg:#32211f; --high-bg:#302619; --med-bg:#2e2a18; --low-bg:#232930;
+    --code-bg:#262c33;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#14181c; --surface:#1c2127; --ink:#e4e8ec; --muted:#98a3ad; --line:#2c333a;
+  --accent:#4cc4be; --accent-ink:#6ad4ce;
+  --crit:#f07264; --high:#eda15c; --med:#d9c258; --low:#98a3ad;
+  --crit-bg:#32211f; --high-bg:#302619; --med-bg:#2e2a18; --low-bg:#232930;
+  --code-bg:#262c33;
+}
+:root[data-theme="light"]{
+  --bg:#f6f7f8; --surface:#ffffff; --ink:#1c2126; --muted:#5a646e; --line:#dde2e6;
+  --accent:#0e6e6a; --accent-ink:#0a5450;
+  --crit:#b52a1e; --high:#c2610a; --med:#9a7b00; --low:#5a646e;
+  --crit-bg:#faeae8; --high-bg:#faf0e4; --med-bg:#f8f4e0; --low-bg:#eef0f2;
+  --code-bg:#eef0f2;
+}
+html{background:var(--bg)}
+body{
+  font:16px/1.6 "Seravek","Segoe UI",system-ui,-apple-system,sans-serif;
+  color:var(--ink); background:var(--bg); margin:0; padding:0 20px 96px;
+}
+main{max-width:78ch; margin:0 auto}
+h1,h2,h3,h4{line-height:1.25; text-wrap:balance; font-weight:650}
+h1{font-size:1.9rem; margin:56px 0 6px}
+h2{font-size:1.35rem; margin:56px 0 14px; padding-top:18px; border-top:1px solid var(--line)}
+h3{font-size:1.05rem; margin:30px 0 8px}
+p{margin:10px 0}
+a{color:var(--accent-ink)}
+code,.path{
+  font:0.85em/1.5 ui-monospace,"SF Mono","Cascadia Code",Menlo,Consolas,monospace;
+  background:var(--code-bg); padding:1px 5px; border-radius:4px;
+}
+.eyebrow{
+  text-transform:uppercase; letter-spacing:.12em; font-size:.72rem; font-weight:650;
+  color:var(--accent-ink); margin-top:48px;
+}
+.subtitle{color:var(--muted); margin:0 0 8px}
+.metaline{color:var(--muted); font-size:.85rem}
+.lede{font-size:1.06rem}
+.callout{
+  background:var(--surface); border:1px solid var(--line); border-left:4px solid var(--crit);
+  border-radius:6px; padding:14px 18px; margin:22px 0;
+}
+.callout.ok{border-left-color:var(--accent)}
+table{border-collapse:collapse; width:100%; font-size:.9rem; font-variant-numeric:tabular-nums}
+th,td{text-align:left; padding:7px 12px 7px 0; border-bottom:1px solid var(--line); vertical-align:top}
+th{color:var(--muted); font-weight:600; font-size:.78rem; text-transform:uppercase; letter-spacing:.06em}
+.tablewrap{overflow-x:auto}
+.finding{
+  background:var(--surface); border:1px solid var(--line); border-radius:8px;
+  margin:18px 0; padding:16px 20px 14px; border-left-width:4px;
+}
+.finding.crit{border-left-color:var(--crit)}
+.finding.high{border-left-color:var(--high)}
+.finding.med{border-left-color:var(--med)}
+.finding.low{border-left-color:var(--low)}
+.finding h3{margin:0 0 6px; font-size:1.02rem}
+.chips{display:flex; flex-wrap:wrap; gap:8px; margin:8px 0 12px}
+.chip{
+  font-size:.72rem; font-weight:650; letter-spacing:.05em; text-transform:uppercase;
+  padding:2px 9px; border-radius:99px; background:var(--low-bg); color:var(--muted);
+  white-space:nowrap;
+}
+.chip.sev-crit{background:var(--crit-bg); color:var(--crit)}
+.chip.sev-high{background:var(--high-bg); color:var(--high)}
+.chip.sev-med{background:var(--med-bg); color:var(--med)}
+.chip.sev-low{background:var(--low-bg); color:var(--low)}
+.chip.file{text-transform:none; letter-spacing:0; font-family:ui-monospace,Menlo,Consolas,monospace}
+.finding dl{margin:0}
+.finding dt{
+  font-size:.72rem; font-weight:650; text-transform:uppercase; letter-spacing:.08em;
+  color:var(--muted); margin-top:10px;
+}
+.finding dd{margin:2px 0 0}
+ul,ol{padding-left:1.3em}
+li{margin:5px 0}
+.scores{display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin:18px 0}
+.score{
+  background:var(--surface); border:1px solid var(--line); border-radius:8px; padding:12px 16px;
+}
+.score .n{font-size:1.7rem; font-weight:700; font-variant-numeric:tabular-nums; color:var(--accent-ink)}
+.score .l{font-size:.78rem; color:var(--muted); text-transform:uppercase; letter-spacing:.07em; font-weight:600}
+:focus-visible{outline:2px solid var(--accent); outline-offset:2px}
+@media (prefers-reduced-motion: reduce){*{animation:none!important;transition:none!important}}
+</style>
+
+<main>
+<p class="eyebrow">Pre-deployment technical audit</p>
+<h1>RoboSub 2026 AUV Software Stack</h1>
+<p class="subtitle">Sensors → perception → planning → control → Pixhawk → thrusters, traced end-to-end.</p>
+<p class="metaline">Audited on the vehicle (Jetson, <code>~/robosub2026/robosub-2026</code>) · 2026-07-12 · ~15k lines project code across root field scripts + 7 ROS 2 packages (vendored ZED/BehaviorTree.CPP packages skimmed, not audited)</p>
+
+<h2 id="exec">1 · Executive summary</h2>
+<p class="lede">The single most urgent problem is not a code bug: <strong>this vehicle's checkout is one commit behind <code>origin/main</code></strong>, and that missing commit (<code>3ac71152</code>, pushed 2026-07-12 by a teammate) contains the competition gate mission (<code>gate_task.py</code>), the DepthKeeper depth-hold engine, the detector letterbox/BGRA fix, and the 6-DOF message/thruster changes. The untracked <code>gate_spin_pass.py</code> on this machine imports all of it — <strong>it crashes with <code>ModuleNotFoundError</code> before arming anything</strong>. Until you pull <em>and</em> rebuild <code>auv_msgs</code>, the primary mission script cannot run and the detector on disk still feeds the model channel-swapped, aspect-squashed frames.</p>
+<p>Beyond the sync issue, the stack is really <strong>two parallel autonomy stacks</strong>: the field-proven Python mission scripts (field_common / DepthKeeper / gate_task) and a C++ behavior-tree scaffold (SHRUB) whose motion primitives are open-loop timed stubs, whose manipulation nodes are TODOs (the working <code>dropper.py</code> driver is not wired in), and whose blackboard defaults are success-biased. Only the Python gate stack is plausibly competition-ready.</p>
+<p>The most dangerous runtime behaviors found: the thruster node <strong>auto-re-arms after any disarm</strong> (including failsafe or operator disarm); several closed-loop rotation routines <strong>integrate the absolute value of angle deltas</strong>, so sensor noise and rocking count as rotation progress; the Bar02 depth-hold test <strong>has no stale-depth detection</strong>, which reproduces the observed "Bar02 drops → ArduSub forces MANUAL → sub sinks while the script trusts a frozen reading" failure; and multiple paths <strong>fall back to a silent simulation mode</strong> mid-mission, leaving the stack "running" with dead thrusters.</p>
+
+<div class="callout">
+<strong>Do these before the next water session, in order:</strong>
+<ol>
+<li><code>git stash</code> or commit the local edits to <code>depth_hold_bar02_test.py</code> / <code>motor_test.py</code>, then <code>git pull</code>. Expect conflicts in both files — origin also changed <code>motor_test.py</code> (switched to <code>MOTOR_TEST_THROTTLE_PWM</code> because ArduSub 4.5.7 rejected percent type) while the local copy was retuned on 2026-07-12. Merge deliberately; both sides contain fixes.</li>
+<li>Rebuild generated messages: <code>colcon build --symlink-install --packages-select auv_msgs</code> (then dependents). Without this, DepthKeeper's <code>pitch_rate</code>/<code>roll_rate</code> fields don't exist → its control thread dies on the first tick (F2).</li>
+<li>Re-run <code>gate_spin_pass.py --dry-run</code> and a bench <code>gate_task.py --no-style --yes</code>-less smoke test to confirm imports, detector letterbox path, and Bar02 detection.</li>
+</ol>
+</div>
+
+<h2 id="arch">2 · Architecture assessment</h2>
+<p>Layout: root-level field scripts (mission runners + bench tools) over ROS 2 packages — <code>auv_msgs</code>, <code>mavlink_thruster_control</code> (ThrusterController + SafetyMonitor), <code>vision</code> (front detector + bottom camera), <code>localization</code> (fusion, depth, drift correction, a disabled VSLAM node), <code>control</code> (autonomous_controller + centering framework), <code>prequalification</code>, and <code>bt_mission</code> (C++ BehaviorTree.CPP executor). Workspace is built with <code>--symlink-install</code> (egg-links point at <code>src/</code>), so Python edits take effect without rebuilds — but message/C++ changes do not.</p>
+<ul>
+<li><strong>Duplication is the main structural risk.</strong> Four generations of mission logic coexist: <code>gate_runner.py</code> (legacy, STABILIZE, owns its own MAVLink link), <code>prequalification_node</code>, the Python gate stack (<code>gate_task</code>/<code>gate_spin_pass</code> on origin), and the SHRUB BT. Running the wrong one at the dock is a real failure mode; the legacy runner even uses a different flight mode and depth strategy.</li>
+<li><strong>Two control authorities on one topic.</strong> <code>movement_command</code> is published by RampedDriver, DepthKeeper, autonomous_controller, prequal node, and MissionIO. The single-writer discipline exists only by convention (documented in field_common); nothing enforces it, and the BT + autonomous_controller + a field script running together would fight at 10&nbsp;Hz.</li>
+<li><strong>Frame conventions are split.</strong> ZED world is RIGHT_HANDED_Y_UP (vertical = Y); field_common correctly computes heading about Y, but <code>localization_node</code>, <code>autonomous_controller</code>, and <code>MissionIO</code> extract yaw with the Z-up formula and splice depth into <code>z</code>. Everything downstream of <code>localization/pose</code> (station_keep, waypoint) is frame-inconsistent (F18).</li>
+<li><strong>Good patterns worth keeping:</strong> the DepthKeeper single-writer engine, the Bar02 sanity gate (30BA misdetect check), the ZED open/reopen-with-retry loops, the passive <code>master.messages</code> heartbeat read under an external recv owner, and the pymavlink <code>add_message</code> monkeypatch.</li>
+</ul>
+
+<h2 id="findings">3 · Findings</h2>
+<p class="metaline">Ranked by severity. File paths are relative to the repo root; line numbers refer to the working tree unless marked <em>origin</em> (the unpulled commit <code>3ac71152</code>).</p>
+
+<!-- ─────────────── CRITICAL ─────────────── -->
+
+<div class="finding crit" id="f1">
+<h3>F1 · Vehicle checkout is behind origin/main; the gate mission script cannot even import</h3>
+<div class="chips"><span class="chip sev-crit">Critical</span><span class="chip">Ops / Deployment</span><span class="chip file">gate_spin_pass.py:69</span><span class="chip">Confidence: High</span></div>
+<dl>
+<dt>Description</dt><dd>Local <code>main</code> is at <code>a440c08e</code>; <code>origin/main</code> is at <code>3ac71152</code> ("Add gate task missions, DepthKeeper depth-hold engine, motor trim tool"). The untracked <code>gate_spin_pass.py</code> does <code>from gate_task import dive, dive_open_loop, search_gate</code> and uses <code>fc.Bar02DepthSource</code>, <code>fc.DepthKeeper</code>, <code>fc.clamp</code> — none of which exist in the checked-out <code>field_common.py</code>, and <code>gate_task.py</code> is not on disk at all.</dd>
+<dt>Root cause</dt><dd>Commit was pushed from another machine (different author email); this Jetson never pulled. <code>gate_spin_pass.py</code> was written against the origin version of the tree.</dd>
+<dt>Failure scenario</dt><dd>At the dock: <code>python3 gate_spin_pass.py</code> → <code>ModuleNotFoundError: No module named 'gate_task'</code>. Zero mission capability until fixed. Worse: a panicked partial fix (copying one file) would run new mission code against the <em>old</em> field_common/thruster/msg stack.</dd>
+<dt>Recommended fix</dt><dd><code>git stash && git pull --ff-only</code> — but note local modified <code>depth_hold_bar02_test.py</code> and <code>motor_test.py</code> both collide with origin changes (origin's motor_test switched throttle type to PWM because ArduSub 4.5.7 rejected PERCENT; the local copy was retuned for the dead-man stream). Merge both sides by hand, then commit and push so the two machines converge.</dd>
+</dl>
+</div>
+
+<div class="finding crit" id="f2">
+<h3>F2 · After the pull, stale generated messages silently kill the DepthKeeper thread</h3>
+<div class="chips"><span class="chip sev-crit">Critical</span><span class="chip">ROS / Build</span><span class="chip file">field_common.py (origin) · src/auv_msgs/msg/MovementCommand.msg</span><span class="chip">Confidence: High</span></div>
+<dl>
+<dt>Description</dt><dd>Origin adds <code>pitch_rate</code>/<code>roll_rate</code> to <code>MovementCommand</code>; DepthKeeper's <code>_send()</code> sets them every tick. Python packages are symlink-installed (live), but <code>auv_msgs</code> is <em>generated</em> code in <code>install/</code> — it does not update on pull.</dd>
+<dt>Root cause</dt><dd>Symlink-install gives the illusion that pulling is enough; message and C++ packages still need <code>colcon build</code>. (Already a documented trap for this repo.)</dd>
+<dt>Failure scenario</dt><dd>Pull without rebuild → first keeper tick raises <code>AttributeError: pitch_rate</code> inside the daemon control thread. The thread dies <em>silently</em> (no guard, F21); the thruster node holds the last commanded axes for up to 30&nbsp;s (watchdog default) with no depth-hold heave, then stops but stays armed in ALT_HOLD at depth.</dd>
+<dt>Recommended fix</dt><dd><code>colcon build --symlink-install --packages-select auv_msgs mavlink_thruster_control bt_mission</code> after every pull that touches <code>msg/</code> or C++. Add a startup assertion in field_common: <code>assert hasattr(MovementCommand(), 'pitch_rate')</code> with a "rebuild auv_msgs" message.</dd>
+</dl>
+</div>
+
+<div class="finding crit" id="f3">
+<h3>F3 · Detector on disk feeds the model channel-swapped, aspect-squashed frames</h3>
+<div class="chips"><span class="chip sev-crit">Critical</span><span class="chip">Vision</span><span class="chip file">src/vision/vision/detector.py:656,115,301</span><span class="chip">Confidence: High</span></div>
+<dl>
+<dt>Description</dt><dd>The working-tree inference thread converts ZED frames with <code>COLOR_RGBA2RGB</code>, but ZED <code>get_data()</code> returns <strong>BGRA</strong> — red/blue are swapped. Preprocessing is a plain <code>cv2.resize</code> of 1280×720 → 416×416 (~1.8× horizontal squash the model never saw in training). Both are fixed in the unpulled commit (BGRA2RGB + letterbox with gain/pad un-mapping).</dd>
+<dt>Root cause</dt><dd>Fix landed upstream only (part of <code>3ac71152</code>).</dd>
+<dt>Failure scenario</dt><dd>Every mission run on this machine until the pull: depressed confidences, missed gate/marker detections at range, mis-localized boxes — exactly the degraded-detection behavior chased on 2026-07-10.</dd>
+<dt>Recommended fix</dt><dd>Pull (F1). Then also fix the same two bugs in <code>bottom_camera_node.py</code>, which origin did <em>not</em> touch (F12).</dd>
+</dl>
+</div>
+
+<div class="finding crit" id="f4">
+<h3>F4 · Depth-hold test trusts a frozen depth reading — reproduces the "Bar02 drops, sub sinks" incident</h3>
+<div class="chips"><span class="chip sev-crit">Critical</span><span class="chip">Safety / Sensors</span><span class="chip file">depth_hold_bar02_test.py:731–830 (main loop, drain_depth)</span><span class="chip">Confidence: High</span></div>
+<dl>
+<dt>Description</dt><dd><code>drain_depth()</code> returns <code>None</code> when no fresh pressure message is buffered, and the loop then keeps using the <em>last</em> <code>depth</code> value forever. There is no staleness timer, and the loop never watches heartbeat <code>custom_mode</code> after the initial ALT_HOLD verification.</dd>
+<dt>Root cause</dt><dd>Depth freshness was only considered at setup (detection + surface latch), not during the run. The Bar02's I2C connection is known-intermittent on this vehicle.</dd>
+<dt>Failure scenario</dt><dd>Bar02 drops mid-run at 0.5&nbsp;m with target 0.9&nbsp;m: ArduSub silently forces MANUAL (mode 19), where the script's <code>z &lt; 500</code> "descend" frames become <em>direct down-thrust</em>. The P controller sees a frozen 0.5&nbsp;m error and commands descent indefinitely; the <code>--max-depth</code> abort can never trip because the reading never changes. This is the observed 2026-07-09 sink signature. The abort/surface paths have the same hole (loop until frozen depth ≤ deadband → never exits until the 30&nbsp;s surfacing deadline or Ctrl-C).</dd>
+<dt>Recommended fix</dt><dd>Track <code>last_depth_time</code>; if no pressure message for &gt;1.5&nbsp;s → declare depth lost, send neutral z, surface on timer, disarm. Also re-check <code>HEARTBEAT.custom_mode</code> each second and treat an unexpected exit from ALT_HOLD as an abort. (DepthKeeper on origin already handles staleness via <code>depth(stale_s=2)</code> — the standalone test should match.)</dd>
+</dl>
+</div>
+
+<!-- ─────────────── HIGH ─────────────── -->
+
+<div class="finding high" id="f5">
+<h3>F5 · Thruster node auto-re-arms after any disarm, including failsafe or operator disarm</h3>
+<div class="chips"><span class="chip sev-high">High</span><span class="chip">Safety / Pixhawk</span><span class="chip file">src/mavlink_thruster_control/…/thruster_node.py:316–329</span><span class="chip">Confidence: High</span></div>
+<dl>
+<dt>Description</dt><dd><code>_check_armed_status()</code> treats every disarm as an anomaly: it re-sends the flight mode and re-arms, forever, with no attempt counter and no way to distinguish "ArduSub battery/leak failsafe disarmed us" or "a human disarmed us from QGC / tether" from a genuine glitch.</dd>
+<dt>Root cause</dt><dd>Reconnect robustness written without an operator-intent model.</dd>
+<dt>Failure scenario</dt><dd>Poolside: diver near the vehicle, operator disarms from QGC — five seconds later the node re-arms and props can spin. Or: ArduSub disarms on a battery failsafe and the node re-arms a brownout-prone vehicle repeatedly.</dd>
+<dt>Recommended fix</dt><dd>Re-arm only if the node itself has not sent a disarm, cap consecutive re-arms (e.g. 3), and respect failsafe disarms: parse the STATUSTEXT that accompanies the disarm; if it contains "failsafe"/"leak"/"battery", stop re-arming and latch a critical flag instead.</dd>
+</dl>
+</div>
+
+<div class="finding high" id="f6">
+<h3>F6 · Silent "simulation mode" fallbacks let a mission keep running with dead thrusters</h3>
+<div class="chips"><span class="chip sev-high">High</span><span class="chip">Safety / Pixhawk</span><span class="chip file">thruster_node.py:197–199, 248–254</span><span class="chip">Confidence: High</span></div>
+<dl>
+<dt>Description</dt><dd>If no serial device answers at startup, or 5 reconnect attempts fail mid-run, the node sets <code>simulate = True</code> and continues as if healthy. Mission scripts, the BT, and the safety monitor all keep "succeeding" against a vehicle that is producing no thrust — or, mid-water, one that just went limp.</dd>
+<dt>Root cause</dt><dd>A desk-development convenience left in the competition path. (Memory notes the same symptom from the pymavlink <code>add_message</code> crash: "SIMULATION mode" was the visible symptom of a dead recv path.)</dd>
+<dt>Failure scenario</dt><dd>USB hiccup during a run → 5 failed reconnects → vehicle drifts/floats with the whole stack convinced the mission is progressing. At the surface before launch: wrong port → everything "works", nothing moves, five minutes of run window burned.</dd>
+<dt>Recommended fix</dt><dd>Make simulate opt-in only (<code>simulate:=true</code>); on hardware, connection loss should escalate loudly — publish a <code>/safety/thruster_link_lost</code> Bool the BT maps to <code>critical_failure</code>, and have field_common's session abort if <code>thrusters.simulate</code> flips true.</dd>
+</dl>
+</div>
+
+<div class="finding high" id="f7">
+<h3>F7 · Every closed-loop rotation integrates |Δangle| — noise and rocking count as progress, direction is never checked</h3>
+<div class="chips"><span class="chip sev-high">High</span><span class="chip">Navigation / Control</span><span class="chip file">field_common.py:319 · origin DepthKeeper.turn/rotate · gate_spin_pass.py:301</span><span class="chip">Confidence: High</span></div>
+<dl>
+<dt>Description</dt><dd><code>turned += abs(wrap(h - h_prev))</code> (ZED path) and <code>rotated += abs(rates[idx]) * dt</code> (gyro path) accumulate unsigned increments. Heading jitter, current-induced oscillation, and — worst — ALT_HOLD/self-leveling <em>fighting</em> a roll all advance the counter.</dd>
+<dt>Root cause</dt><dd>Chosen to be "immune to sign conventions", which also makes it immune to being wrong.</dd>
+<dt>Failure scenario</dt><dd>Style points: in MANUAL, a roll attempt that stalls at ±25° and rocks (the exact 2026-07-10 behavior at 31°) accumulates |p|·dt until the 90° increment "verifies" — the script reports a scored roll that never happened, ends the entry with the sub tilted, then re-latches depth while badly oriented. Turns: a noisy 10&nbsp;Hz ZED heading adds phantom degrees, so 90° turns systematically under-rotate; the gate re-aim masks it until vision drops.</dd>
+<dt>Recommended fix</dt><dd>Integrate the <em>signed</em> delta projected on the commanded direction: <code>turned += max(0, direction * wrap(h - h_prev))</code> (equivalently <code>direction * rates[idx] * dt</code>), and declare failure if net progress stalls below a rate floor for ~2&nbsp;s instead of silently completing.</dd>
+</dl>
+</div>
+
+<div class="finding high" id="f8">
+<h3>F8 · ZED pose/depth published without checking tracking state — frozen odometry defeats every staleness check</h3>
+<div class="chips"><span class="chip sev-high">High</span><span class="chip">Sensors / ZED</span><span class="chip file">src/vision/vision/detector.py:961–970 · localization/vslam_node.py:189</span><span class="chip">Confidence: High</span></div>
+<dl>
+<dt>Description</dt><dd><code>run_detector()</code> calls <code>zed.get_position()</code> and publishes <code>depth/sub_depth</code> + <code>vslam/odometry</code> every frame, ignoring the returned <code>POSITIONAL_TRACKING_STATE</code>. When tracking is SEARCHING/OFF the last pose keeps streaming with fresh timestamps. <code>vslam_node.py</code> has the same hole. (<code>bottom_camera_node.py</code> checks the state — the only one that does.)</dd>
+<dt>Root cause</dt><dd>Return value ignored.</dd>
+<dt>Failure scenario</dt><dd>Tracking drops during a spin (VSLAM loses lock after style moves — a known pattern here): HeadingMonitor keeps returning a frozen heading, so <code>DepthKeeper.turn</code> sees zero deltas and burns its whole timeout mid-rotation while the vehicle keeps yawing; CoordMonitor's <code>have_fix()</code> stays true, so gate_spin_pass's cross-track law corrects against a stale position; ZED-derived depth freezes while the sub moves vertically.</dd>
+<dt>Recommended fix</dt><dd>Publish pose/depth only when state == OK; on any other state, stop publishing (staleness monitors downstream already do the right thing the moment messages stop).</dd>
+</dl>
+</div>
+
+<div class="finding high" id="f9">
+<h3>F9 · autonomous_controller leaves stale thrust on non-dominant axes — station-keep and waypoint spiral</h3>
+<div class="chips"><span class="chip sev-high">High</span><span class="chip">Thrusters / Control</span><span class="chip file">src/control/control/autonomous_controller.py:665–686</span><span class="chip">Confidence: High</span></div>
+<dl>
+<dt>Description</dt><dd><code>_dispatch_axes()</code> sends only the single largest axis per tick as a verb (<code>rotate_cw</code>, <code>surge_forward</code>, …). Thruster verbs only touch their own axis: once <code>rotate_cw 0.5</code> has been sent, <code>current_r</code> stays 500-scaled until a <code>stop</code> — subsequent <code>surge_forward</code> ticks never clear it.</dd>
+<dt>Root cause</dt><dd>Dominant-axis dispatch bolted onto single-axis verb semantics; the correct multi-axis path (<code>command='axes'</code>) exists and is used by track_object, but not here.</dd>
+<dt>Failure scenario</dt><dd>waypoint mode: the "turn first if off heading" phase commands yaw; once heading closes, surge becomes dominant — but the last yaw command keeps spinning the sub at 10&nbsp;Hz forever. The vehicle corkscrews and never reaches the waypoint; station_keep oscillates the same way.</dd>
+<dt>Recommended fix</dt><dd>Replace <code>_dispatch_axes</code> with <code>_dispatch_setpoint(surge, strafe, heave, yaw)</code> — one <code>'axes'</code> message with all four values each tick.</dd>
+</dl>
+</div>
+
+<div class="finding high" id="f10">
+<h3>F10 · DepthKeeper heave commands below effort 0.2 are eaten by ALT_HOLD's stick deadzone</h3>
+<div class="chips"><span class="chip sev-high">High</span><span class="chip">Thrusters / Pixhawk</span><span class="chip file">thruster_node.py set_axes (origin) · field_common.py DepthKeeper (origin)</span><span class="chip">Confidence: High</span></div>
+<dl>
+<dt>Description</dt><dd><code>set_axes()</code> maps heave linearly: effort 0.15 → z = 425, only 75 counts from neutral — inside ArduSub's THR_DZ (±100), which ALT_HOLD treats as "hold depth". The standalone depth test learned this (its <code>vertical_z()</code> offsets past THR_DZ; fixed 2026-07-12), but the DepthKeeper→thruster path never got the same mapping. Default <code>min_speed=0.15</code> is therefore a no-op in ALT_HOLD, and the keeper's "always-active P counters buoyancy inside the deadband" only actually works in MANUAL.</dd>
+<dt>Root cause</dt><dd>The deadzone lesson was applied to one code path, not the shared one.</dd>
+<dt>Failure scenario</dt><dd>In ALT_HOLD the keeper believes it is nudging depth with 0.1–0.2 efforts while ArduSub ignores them; depth error must grow past ~0.1&nbsp;m (kp=2) before any command bites, producing a sawtooth around the target. If ALT_HOLD is rejected (Bar02 gone → MANUAL), the same small efforts suddenly become real thrust — the controller's effective gain changes 0→full with flight mode.</dd>
+<dt>Recommended fix</dt><dd>In <code>set_axes()</code>, offset non-zero heave past the deadzone exactly like <code>vertical_z()</code>: <code>z = 500 − sign(h)·(THR_DZ + |h|·(500−THR_DZ))</code>, and read THR_DZ from params at connect instead of hardcoding.</dd>
+</dl>
+</div>
+
+<div class="finding high" id="f11">
+<h3>F11 · Mission timeout and mission end leave the vehicle armed at depth; nothing in the ROS stack can disarm</h3>
+<div class="chips"><span class="chip sev-high">High</span><span class="chip">Safety / BT</span><span class="chip file">src/robosub2026/src/bt_executor.cpp:129–201</span><span class="chip">Confidence: High</span></div>
+<dl>
+<dt>Description</dt><dd>On the 14.5-minute timeout the executor halts the tree and sends <code>stop</code> — z neutral, ALT_HOLD holds current depth, vehicle stays armed and submerged. There is no surface-then-disarm epilogue, and no ROS interface to disarm at all: ThrusterController only disarms in <code>destroy_node()</code>.</dd>
+<dt>Root cause</dt><dd>Recovery exists as a subtree (SurfaceSafely) but the executor's out-of-band exits (timeout, tick exception, MAX_TICKS) bypass it.</dd>
+<dt>Failure scenario</dt><dd>Run window expires with the sub at 2&nbsp;m: it sits there, armed, holding depth, until someone toggles the kill switch — burning the surfacing points and looking like a dead vehicle to the judges.</dd>
+<dt>Recommended fix</dt><dd>On any terminal path: command a closed-loop surface (emerge until depth &lt; 0.2 or 20&nbsp;s), then publish a dedicated <code>disarm</code> command — add one to MovementCommand (or a std_srvs Trigger on the thruster node) so the mission layer can actually release the vehicle.</dd>
+</dl>
+</div>
+
+<div class="finding high" id="f12">
+<h3>F12 · Bottom camera: BGRA swap unfixed, default model missing, and a conflicting depth publisher</h3>
+<div class="chips"><span class="chip sev-high">High</span><span class="chip">Vision</span><span class="chip file">src/vision/vision/bottom_camera_node.py:36,144,55</span><span class="chip">Confidence: High</span></div>
+<dl>
+<dt>Description</dt><dd>(a) Line 144 still uses <code>COLOR_RGBA2RGB</code> on BGRA frames — the fix in <code>3ac71152</code> touched only detector.py, so the bottom camera stays channel-swapped and un-letterboxed even after the pull (its own <code>_inference_thread</code> duplicates the old code). (b) The default model <code>dfc_rs_26.onnx</code> does not exist anywhere in the repo → model load fails → <code>exit_signal=True</code> → the node dies at startup. (c) It publishes <code>depth/sub_depth</code>, the same topic as the front detector, with a <em>different</em> tracking origin — if both cameras run, subscribers see two interleaved depth references.</dd>
+<dt>Root cause</dt><dd>Copy-paste divergence from detector.py; downward-camera model never deployed.</dd>
+<dt>Failure scenario</dt><dd>Bins/path-marker tasks (the entire drift-correction pipeline hangs off <code>vision/path_markers</code>) have no working perception; if the model is later dropped in, detections are degraded by the channel swap; running both cameras makes ZED-derived depth flap between two origins.</dd>
+<dt>Recommended fix</dt><dd>Refactor to share detector.py's fixed inference thread (one implementation), deploy/rename the bottom model, and namespace the topics (<code>depth/sub_depth_front</code> vs <code>…_bottom</code>) or drop the bottom depth publisher entirely — Bar02 is the depth authority.</dd>
+</dl>
+</div>
+
+<div class="finding high" id="f13">
+<h3>F13 · Depth-safety response latches full ascent, then stops supervising</h3>
+<div class="chips"><span class="chip sev-high">High</span><span class="chip">Safety / Control</span><span class="chip file">autonomous_controller.py:460–465</span><span class="chip">Confidence: High</span></div>
+<dl>
+<dt>Description</dt><dd>When depth exceeds 4.5&nbsp;m the controller sends one <code>emerge 0.6</code> (duration 0 = "until next command"), sets mode to idle, and returns. Idle mode sends nothing, so the thruster holds 0.6 up-thrust until its own 30&nbsp;s watchdog fires — an unsupervised full-speed ascent, likely a surface breach at speed.</dd>
+<dt>Root cause</dt><dd>Safety action written as a one-shot instead of a supervised state.</dd>
+<dt>Failure scenario</dt><dd>ZED depth glitches past 4.5&nbsp;m for one tick → vehicle rockets to the surface for 30&nbsp;s regardless of the actual depth, ruining the run (and DQ-risk near other vehicles/divers).</dd>
+<dt>Recommended fix</dt><dd>Make an explicit <code>surfacing</code> mode: closed-loop moderate ascent, exit when depth &lt; 0.3&nbsp;m, then <code>stop</code>. Trip it only after N consecutive over-depth ticks to reject sensor glitches.</dd>
+</dl>
+</div>
+
+<div class="finding high" id="f14">
+<h3>F14 · No integrated bring-up: the BT launch starts only itself, and the tree's stubs default to success</h3>
+<div class="chips"><span class="chip sev-high">High</span><span class="chip">Architecture / Launch</span><span class="chip file">src/robosub2026/launch/shrub.launch.py · safety_nodes.cpp · manipulation_nodes.cpp</span><span class="chip">Confidence: High</span></div>
+<dl>
+<dt>Description</dt><dd><code>shrub.launch.py</code> launches <code>bt_executor</code> alone; thruster_node, detector, safety_monitor, depth_node, localization and autonomous_controller (which the BT's <code>nav()</code> calls depend on) must be started by hand in the right order. Meanwhile the blackboard seeds and stub nodes are success-biased: <code>torpedo_hit</code>, <code>marker_in_bin</code>, <code>aligned</code>, <code>correct_basket</code> default true; several perception stubs literally return <code>ok ? SUCCESS : SUCCESS</code>; manipulation nodes decrement counters without hardware. The proven <code>dropper.py</code> driver is not wired into <code>ReleaseMarker</code>.</dd>
+<dt>Root cause</dt><dd>Scaffold-first development; integration deferred.</dd>
+<dt>Failure scenario</dt><dd>Launch the BT believing it runs the mission: the tree marches through tasks "successfully" while the vehicle does timed open-loop twitches, drops nothing, fires nothing — and reports Mission SUCCESS.</dd>
+<dt>Recommended fix</dt><dd>One <code>mission.launch.py</code> that brings up thruster (simulate:=false explicitly), safety_monitor (simulate:=false), detector, depth_node, autonomous_controller, then the executor. Flip the success-biased seeds to false so unfinished branches read as FAILURE (visible), and wire the dropper into <code>ReleaseMarker</code> — the driver already works.</dd>
+</dl>
+</div>
+
+<!-- ─────────────── MEDIUM ─────────────── -->
+
+<div class="finding med" id="f15">
+<h3>F15 · Blocking MAVLink reads inside timer callbacks stall the 10 Hz control loop</h3>
+<div class="chips"><span class="chip sev-med">Medium</span><span class="chip">Concurrency / Timing</span><span class="chip file">thruster_node.py:201–227, 243–271, 144–199</span><span class="chip">Confidence: High</span></div>
+<dl>
+<dt>Description</dt><dd><code>_arm_vehicle()</code> (called from the armed-check timer) blocks up to 3&nbsp;s on <code>recv_match</code>; <code>_reconnect_mavlink()</code> (called from the control loop's error path) blocks ~5&nbsp;s per candidate port on <code>wait_heartbeat</code>. Node callbacks share one mutually-exclusive callback group, so <code>manual_control</code> streaming and the GCS heartbeat stop for the duration.</dd>
+<dt>Failure scenario</dt><dd>During a mid-run re-arm or reconnect the vehicle receives no axis frames for seconds: ALT_HOLD coasts (benign) or, if pilot-input failsafe is enabled, ArduSub reacts to the stream gap. Turns/depth corrections in flight simply freeze.</dd>
+<dt>Recommended fix</dt><dd>Do arming/reconnect on a worker thread (or a Reentrant group + dedicated thread), keep the control-loop callback non-blocking, and feed neutral frames while reconnecting.</dd>
+</dl>
+</div>
+
+<div class="finding med" id="f16">
+<h3>F16 · COMMAND_ACK matched without checking which command it acknowledges</h3>
+<div class="chips"><span class="chip sev-med">Medium</span><span class="chip">Pixhawk / MAVLink</span><span class="chip file">thruster_node.py:176,211 · depth_hold_bar02_test.py:454,477</span><span class="chip">Confidence: High</span></div>
+<dl>
+<dt>Description</dt><dd>Arm/mode ACKs are read as "next COMMAND_ACK within timeout" — an ack for an unrelated command (stream request, param op, a queued earlier command) satisfies the check. <code>motor_test.py</code> does it correctly (<code>ack.command == MAV_CMD_DO_MOTOR_TEST</code>); the others don't.</dd>
+<dt>Failure scenario</dt><dd>Arm reported "accepted" from a stale ack while the actual arm was rejected by a prearm check → mission proceeds against a disarmed vehicle until the armed-status timer notices (up to 5&nbsp;s later, then fights it, see F5).</dd>
+<dt>Recommended fix</dt><dd>Filter on <code>ack.command</code> everywhere; treat mismatched acks as noise and keep waiting.</dd>
+</dl>
+</div>
+
+<div class="finding med" id="f17">
+<h3>F17 · Dropper's blocking reads will race the Bar02 streamer when integrated into a mission</h3>
+<div class="chips"><span class="chip sev-med">Medium</span><span class="chip">Concurrency / MAVLink</span><span class="chip file">dropper.py:49–99</span><span class="chip">Confidence: Medium</span></div>
+<dl>
+<dt>Description</dt><dd><code>Dropper._recv/_servo_raw/_get_param</code> call <code>recv_match(blocking=True)</code> on the shared master. In the DepthKeeper missions, <code>Bar02DepthSource</code> claims the serial recv path (<code>master._external_recv_reader</code>) and reads from a background thread — a second blocking reader reproduces the documented two-reader pyserial race ("readiness to read but returned no data") and steals the streamer's pressure/attitude messages.</dd>
+<dt>Failure scenario</dt><dd>Bin task: mission calls <code>dropper.prepare()</code>/<code>drop_right()</code> mid-run → depth/attitude stream hiccups, keeper logs "no Bar02 depth", possibly a serial exception storm during the drop — at the exact moment the vehicle must hover steady.</dd>
+<dt>Recommended fix</dt><dd>Give Dropper a passive mode when <code>master._external_recv_reader</code> is set: read PARAM_VALUE / SERVO_OUTPUT_RAW / COMMAND_ACK from <code>master.messages</code> (timestamp-gated) instead of <code>recv_match</code>, mirroring the thruster node's <code>_passive_heartbeat()</code>.</dd>
+</dl>
+</div>
+
+<div class="finding med" id="f18">
+<h3>F18 · Fused localization is frame-inconsistent: Z-up yaw math on Y-up data, two VIO sources, spliced depth axis</h3>
+<div class="chips"><span class="chip sev-med">Medium</span><span class="chip">Coordinate frames</span><span class="chip file">src/localization/localization/localization_node.py:30–43, 80–88, 174–181</span><span class="chip">Confidence: High</span></div>
+<dl>
+<dt>Description</dt><dd>(a) <code>_quat_to_yaw</code> uses the Z-up yaw formula, but both odometry sources are ZED RIGHT_HANDED_Y_UP (vertical = Y; field_common correctly computes heading about Y). The fused yaw — consumed by autonomous_controller and MissionIO with the same Z-up assumption — is wrong whenever the camera pitches/rolls. (b) <code>odom/bottom</code> and <code>vslam/odometry</code> feed one callback: two live sources interleave and the pose jumps between two origins. (c) Depth is written into <code>pose.z</code> while x/y remain camera-world axes — a hybrid frame no consumer documents.</dd>
+<dt>Failure scenario</dt><dd>waypoint/station_keep (already broken by F9) get a heading that swings with pitch; with both cameras running the anchor point teleports; drift corrections computed in the hybrid frame push the fused pose further off.</dd>
+<dt>Recommended fix</dt><dd>Pick one world convention (suggest: convert ZED Y-up → ROS ENU/Z-up at each publisher), one VIO source per run (parameter), and document <code>localization/pose</code>'s frame in the message header. Given VSLAM is deliberately disabled for competition, consider deleting this path until it's needed — it currently only misleads.</dd>
+</dl>
+</div>
+
+<div class="finding med" id="f19">
+<h3>F19 · Detection ranges attach to the wrong objects when the ZED tracker reorders</h3>
+<div class="chips"><span class="chip sev-med">Medium</span><span class="chip">Vision / ZED</span><span class="chip file">detector.py:601–607 (enrich_depths) · bottom_camera_node.py:319–325</span><span class="chip">Confidence: Medium</span></div>
+<dl>
+<dt>Description</dt><dd><code>enrich_depths</code> zips <code>objects.object_list[i]</code> onto <code>detection_infos[i]</code> by index. The ZED object tracker does not preserve ingest order — it drops unconfirmed boxes and appends persistent tracks — so ranges can land on the wrong labels whenever more than one object is in view.</dd>
+<dt>Failure scenario</dt><dd>Gate + marker both visible: the gate detection gets the marker's 1.2&nbsp;m range → AlignGateCenter's <code>in_range</code> fires early → transit starts from the wrong standoff.</dd>
+<dt>Recommended fix</dt><dd>Match by geometry: for each tracked object, take its 2D bbox (<code>bounding_box_2d</code>) and pair with the detection of maximum IoU; leave range −1 when no match clears a threshold.</dd>
+</dl>
+</div>
+
+<div class="finding med" id="f20">
+<h3>F20 · Battery monitor: unknown voltage reads as 100%, and simulate defaults on</h3>
+<div class="chips"><span class="chip sev-med">Medium</span><span class="chip">Safety / Sensors</span><span class="chip file">safety_monitor_node.py:53,126–133</span><span class="chip">Confidence: High</span></div>
+<dl>
+<dt>Description</dt><dd>(a) When <code>battery_remaining = −1</code>, the fallback divides <code>voltage_battery</code> by 1000; MAVLink uses UINT16_MAX (65535) for "unknown", which becomes 65.5&nbsp;V → curve clamps to 100%. (b) <code>simulate</code> defaults <em>true</em>, publishing a flat 100% — if the comp launch forgets <code>simulate:=false</code> + an endpoint, the BT's battery failsafe is permanently blind. (c) Leak detection is a stub returning false (no hardware yet — flagged so it isn't mistaken for coverage).</dd>
+<dt>Failure scenario</dt><dd>Pack sags to 13&nbsp;V mid-run with BATT_CAPACITY unset and voltage reporting unknown → dashboard shows 100% → no critical_failure → brownout instead of a controlled surface.</dd>
+<dt>Recommended fix</dt><dd>Treat <code>voltage_battery == 65535</code> (and 0) as unknown → NaN; default <code>simulate:=false</code> and fail loudly when no endpoint is configured.</dd>
+</dl>
+</div>
+
+<div class="finding med" id="f21">
+<h3>F21 · Control threads have no exception guard — one bad publish silently kills motion control</h3>
+<div class="chips"><span class="chip sev-med">Medium</span><span class="chip">Concurrency / Safety</span><span class="chip file">field_common.py:193–208 (_stream_loop) · origin DepthKeeper._loop</span><span class="chip">Confidence: High</span></div>
+<dl>
+<dt>Description</dt><dd>RampedDriver's streamer thread and DepthKeeper's control thread run bare loops: any exception (publish after context teardown, transient rclpy error, the F2 AttributeError) terminates the daemon thread with no log and no fallback.</dd>
+<dt>Failure scenario</dt><dd>Keeper dies mid-leg → thruster holds the last surge/heave for up to 30&nbsp;s (watchdog), driving blind into the gate structure, then holds depth armed. Nothing on screen explains why the mission froze.</dd>
+<dt>Recommended fix</dt><dd>Wrap loop bodies in try/except: log loudly, publish a <code>stop</code>, retry a few times, and set a <code>dead</code> flag the mission can poll (session teardown should also check it).</dd>
+</dl>
+</div>
+
+<div class="finding med" id="f22">
+<h3>F22 · Thruster watchdog is 30 s and stops without disarming</h3>
+<div class="chips"><span class="chip sev-med">Medium</span><span class="chip">Safety / Thrusters</span><span class="chip file">thruster_node.py:55, 492–501</span><span class="chip">Confidence: High</span></div>
+<dl>
+<dt>Description</dt><dd>30&nbsp;s of stale commands at competition speeds is 10–15&nbsp;m of blind travel before the watchdog neutralizes axes; it then leaves the vehicle armed holding depth indefinitely.</dd>
+<dt>Recommended fix</dt><dd>Drop the default to 3–5&nbsp;s for mission use (the 10&nbsp;Hz streamers make anything longer pointless), and after a second, longer timeout (e.g. 60&nbsp;s with no commands) surface + disarm.</dd>
+</dl>
+</div>
+
+<div class="finding med" id="f23">
+<h3>F23 · DetectionMonitor keeps one detection per label — multi-instance tasks (slalom) see only the freshest</h3>
+<div class="chips"><span class="chip sev-med">Medium</span><span class="chip">Vision / Mission</span><span class="chip file">field_common.py:338–365</span><span class="chip">Confidence: High</span></div>
+<dl>
+<dt>Description</dt><dd><code>_latest[det.label]</code> overwrites per label. The slalom model uses a single <code>slalom</code> class for all pipes (middle-of-three = red), so any slalom logic built on this monitor can never see three pipes at once. (A SlalomMonitor exists per project notes but is not in this repo — verify it survived on whichever machine holds <code>slalom_task.py</code>.)</dd>
+<dt>Recommended fix</dt><dd>Add <code>all(label, min_conf, stale_s) → list</code> to DetectionMonitor keeping the last full frame per label, and build multi-object logic on that.</dd>
+</dl>
+</div>
+
+<div class="finding med" id="f24">
+<h3>F24 · BT motion primitives are uncalibrated open-loop constants; YawSweep doesn't do what its name says</h3>
+<div class="chips"><span class="chip sev-med">Medium</span><span class="chip">Navigation / BT</span><span class="chip file">nav_nodes.cpp:181–217, 193–205, 564–577</span><span class="chip">Confidence: High</span></div>
+<dl>
+<dt>Description</dt><dd>Rotate180 = 4&nbsp;s @ 0.4; ExecuteYawRotation assumes 60°/s; YawSweep commands <code>rotate_cw</code> for 1&nbsp;s then idles out the remaining deadline (no left half of the "±sweep"). None of these use the heading feedback that already exists in the Python stack; all need water calibration that has demonstrably changed (TURN_90_SECONDS=3&nbsp;s ⇒ ~30°/s, half the BT's assumption).</dd>
+<dt>Recommended fix</dt><dd>Before relying on the BT for motion, either delegate primitives to autonomous_controller modes with feedback, or copy the DepthKeeper turn (signed integration per F7).</dd>
+</dl>
+</div>
+
+<div class="finding med" id="f25">
+<h3>F25 · Legacy stacks still runnable: gate_runner.py (STABILIZE, own link) and prequalification node duplicate the mission path</h3>
+<div class="chips"><span class="chip sev-med">Medium</span><span class="chip">Architecture</span><span class="chip file">gate_runner.py · src/prequalification/…</span><span class="chip">Confidence: High</span></div>
+<dl>
+<dt>Description</dt><dd><code>gate_runner.py</code> opens its own MAVLink connection, flies STABILIZE with a constant down-thrust depth strategy, and predates every depth/heading lesson learned since. It sits at the repo root next to the current gate scripts with a near-identical name.</dd>
+<dt>Failure scenario</dt><dd>Wrong-script-at-2am: someone runs <code>gate_runner.py</code> instead of <code>gate_spin_pass.py</code>; the sub flies with none of the Bar02 sanity checks, wrong flight mode, uncalibrated constants.</dd>
+<dt>Recommended fix</dt><dd>Move superseded runners into <code>attic/</code> (git keeps history; the working dir shouldn't), or at minimum add a startup banner "SUPERSEDED — use gate_task.py" + confirm prompt.</dd>
+</dl>
+</div>
+
+<!-- ─────────────── LOW ─────────────── -->
+
+<div class="finding low" id="f26">
+<h3>F26 · Assorted lower-risk defects</h3>
+<div class="chips"><span class="chip sev-low">Low</span><span class="chip">Various</span><span class="chip">Confidence: High unless noted</span></div>
+<dl>
+<dt>Items</dt><dd>
+<ul>
+<li><code>vslam_node.py</code>: quaternion-order "fallback" branch is dead code (indexing succeeds either way — if the order ever differed it would publish garbage silently); <code>frame_rot_z_deg</code> rotates about Z in a Y-up world (vertical correction it probably intends is about Y); ZED SDK called from both the grab thread and service callbacks without synchronization.</li>
+<li><code>perception_nodes.cpp</code>: <code>SearchSlalomPoles</code> / <code>DetectMagneticTarget</code> return <code>cond ? SUCCESS : SUCCESS</code> — the condition is computed and discarded.</li>
+<li><code>depth_hold_bar02_test.py</code> surfacing loop gives up after 30&nbsp;s and disarms wherever the sub is (fine if positively buoyant — verify trim).</li>
+<li><code>SERVO_OUTPUT_RAW.servo9_raw</code> (dropper verification) only exists on MAVLink&nbsp;2; if a link ever negotiates MAVLink&nbsp;1 the verify always fails while the servo actually moved. (Confidence: Medium.)</li>
+<li>ThrusterController arms inside <code>__init__</code> — importing/constructing it is an actuation side effect. Session's confirm prompt runs first, but <code>ros2 run</code> arms immediately with no prompt.</li>
+<li><code>session()</code> teardown order is correct (idle → stop → executor shutdown → thruster destroy sends neutral+disarm over the still-open link) — keep it that way; it's load-bearing.</li>
+<li><code>_available_memory_mb()</code> gates the TRT build on host RAM — correct for Jetson unified memory, would mislead on discrete-GPU dev boxes.</li>
+<li>Repo hygiene: <code>__pycache__</code>, logs, <code>.pt/.onnx/.engine</code> weights, and a stray <code>Task1_SurveyRepair (1).svg</code> tracked in git; stale "NOT YET COMPILED" comment in mission_io.cpp; ~40 magic-number timeouts across BT nodes not surfaced as ports/params.</li>
+</ul>
+</dd>
+</dl>
+</div>
+
+<h2 id="domains">4 · Final report by domain</h2>
+
+<h3>4.1 Top highest-risk issues (ranked)</h3>
+<div class="tablewrap"><table>
+<tr><th>#</th><th>Finding</th><th>One-line risk</th></tr>
+<tr><td>1</td><td><a href="#f1">F1</a></td><td>Gate mission script cannot import on this vehicle (repo desync)</td></tr>
+<tr><td>2</td><td><a href="#f2">F2</a></td><td>Post-pull stale <code>auv_msgs</code> silently kills depth-hold thread</td></tr>
+<tr><td>3</td><td><a href="#f4">F4</a></td><td>Frozen Bar02 reading → commanded descent with no abort (observed sink signature)</td></tr>
+<tr><td>4</td><td><a href="#f3">F3</a>/<a href="#f12">F12</a></td><td>Channel-swapped/squashed frames into the model (front until pull; bottom permanently)</td></tr>
+<tr><td>5</td><td><a href="#f5">F5</a></td><td>Auto re-arm overrides operator and failsafe disarms</td></tr>
+<tr><td>6</td><td><a href="#f7">F7</a></td><td>|Δangle| integration fakes rotation progress (style rolls can "verify" while rocking)</td></tr>
+<tr><td>7</td><td><a href="#f6">F6</a></td><td>Silent simulation fallback mid-mission</td></tr>
+<tr><td>8</td><td><a href="#f8">F8</a></td><td>Frozen ZED pose keeps streaming; every staleness check defeated</td></tr>
+<tr><td>9</td><td><a href="#f10">F10</a></td><td>ALT_HOLD deadzone eats DepthKeeper's small heave corrections</td></tr>
+<tr><td>10</td><td><a href="#f9">F9</a></td><td>Stale-axis dispatch makes station-keep/waypoint spiral</td></tr>
+<tr><td>11</td><td><a href="#f11">F11</a></td><td>Mission end/timeout leaves sub armed at depth; no disarm interface</td></tr>
+<tr><td>12</td><td><a href="#f13">F13</a></td><td>Depth-safety latches unsupervised full ascent</td></tr>
+<tr><td>13</td><td><a href="#f14">F14</a></td><td>No integrated launch; success-biased BT stubs report phantom task completion</td></tr>
+<tr><td>14</td><td><a href="#f21">F21</a></td><td>Unguarded control threads die silently</td></tr>
+<tr><td>15</td><td><a href="#f17">F17</a></td><td>Dropper reads race the Bar02 streamer once integrated</td></tr>
+<tr><td>16</td><td><a href="#f15">F15</a></td><td>Blocking recvs stall the 10 Hz control loop</td></tr>
+<tr><td>17</td><td><a href="#f18">F18</a></td><td>Frame-inconsistent fused localization</td></tr>
+<tr><td>18</td><td><a href="#f22">F22</a></td><td>30 s watchdog, stop-without-disarm</td></tr>
+<tr><td>19</td><td><a href="#f19">F19</a></td><td>Ranges attach to wrong detections under tracker reordering</td></tr>
+<tr><td>20</td><td><a href="#f20">F20</a></td><td>Battery monitor can report 100% forever</td></tr>
+</table></div>
+
+<h3>4.2 Safety-critical findings</h3>
+<p>F4, F5, F6, F11, F13, F20, F22 — plus the structural fact that <strong>no software path can disarm the vehicle on request</strong>; disarm happens only on process teardown. The kill switch is the real safety system today; the software should stop assuming it will always be reachable.</p>
+
+<h3>4.3 Pixhawk / MAVLink</h3>
+<p>Connection handling (F6, F15, F16), re-arm policy (F5), ack discipline (F16), the two-reader serial rule (F17 — correctly handled between ThrusterController and Bar02DepthSource on origin via <code>_external_recv_reader</code> + passive <code>master.messages</code> reads; Dropper is the remaining violator). The pymavlink 2.4.49 <code>add_message</code> crash is monkeypatched in depth_hold_bar02_test and (via import) everything that uses it; standalone scripts (<code>motor_test</code>, <code>dropper</code>) carry their own TypeError guards — keep that pattern for any new script.</p>
+
+<h3>4.4 Thruster control</h3>
+<p>Axis clamping and NaN guarding in ThrusterController are genuinely good (finite checks, type checks, clamped ints, neutralize-on-garbage). Remaining issues: deadzone mapping (F10), stale-axis verbs (F9), watchdog policy (F22), and the fact that <code>stop()</code> uses z=500 which in MANUAL means "no vertical thrust" — correct, but callers should know depth is then buoyancy-determined.</p>
+
+<h3>4.5 ROS communication & topic graph</h3>
+<p>Graph as-built: detector → <code>vision/detections</code>, <code>depth/sub_depth</code>, <code>vslam/odometry</code>; bottom camera → <code>odom/bottom</code>, <code>vision/path_markers</code>, <code>depth/sub_depth</code> (collision, F12); depth_node → <code>depth/info</code>; localization → <code>localization/pose</code>; controller/BT/scripts → <code>movement_command</code>, <code>navigation_command</code>. Multiple-writer exposure on <code>movement_command</code> and <code>depth/sub_depth</code> is the main graph defect. Orphans: <code>vslam/path</code>, <code>localization/correction</code> (publisher exists, but drift correction depends on the dead bottom camera), <code>BehaviorStatus.msg</code> (unused). QoS is uniformly default depth-10 reliable — fine at these rates.</p>
+
+<h3>4.6 TF & frames</h3>
+<p>Only vslam_node broadcasts TF (odom → zed_left_camera_frame); nothing consumes TF. All frame handling is ad-hoc per node — the Y-up/Z-up split (F18) is the systemic issue. No IMU→camera→base_link extrinsics anywhere; acceptable while control is image-space reactive, blocking for any world-frame ambition.</p>
+
+<h3>4.7 ZED SDK</h3>
+<p>Open/retry/reopen loops are well built (candidate ladders, close+gc on failure, SIGHUP handlers to release the camera — clearly hard-won). Gaps: tracking-state ignored (F8), one-ZED-per-process rule enforced only by docstring, service-thread SDK calls unsynchronized (F26), and grab→retrieve→get_data buffer reuse is lock-protected correctly in both camera nodes.</p>
+
+<h3>4.8 IMU / barometer / odometry / fusion</h3>
+<p>Bar02: detection, 30BA-misdetect sanity gate, and surface latching are excellent; staleness handling exists in DepthKeeper but not the standalone test (F4). ATTITUDE-based gyro fallback for turns is smart; its |rate| integration is not (F7). ZED odometry: state-gating (F8) and the "front camera as odometry source" shortcut are the weak points. Fusion (localization_node) is an alpha-blend offset scheme with frame bugs (F18) — currently unused by the proven mission path, which is the right call.</p>
+
+<h3>4.9 Computer vision</h3>
+<p>The native TensorRT path (cuda-python, pre-allocated buffers, single stream, thread-safe wrapper, engine cached on disk) is solid engineering for the Orin. Issues: preprocessing bugs (F3/F12), index-based depth enrichment (F19), <code>_parse_yolo</code>'s shape heuristic is fine for current exports but will misparse an end2end export with &gt;300 anchors of 6 channels (document the contract), and NMS is O(n²) capped at 500 — fine. Engine files exist for <code>ffc_rs_26</code>; the bottom model doesn't (F12).</p>
+
+<h3>4.10 State machines / BT</h3>
+<p>The Python BT engine (bt.py) is clean. SHRUB (C++) structure is sound (tick loop, timeout, exception guard, blackboard seeding) but the leaves are scaffolds (F14, F24); the mission timeout epilogue is unsafe (F11). The prequalification FSM is the most battle-tested mission logic in the repo — mine it for timeout/fallback patterns when filling in SHRUB.</p>
+
+<h3>4.11 Timing, concurrency, memory, performance</h3>
+<p>Blocking-in-callback (F15), unguarded threads (F21), busy-ish loops all sleep properly. Memory: CUDA buffers freed in <code>__del__</code> best-effort; sl.Mat reuse is right; Path capped at 500 poses; log tee fsyncs every chunk (deliberate, power-cut-proof — costs some IO). CPU: detector at 416² TRT ~37 fps is comfortable; the <code>--view</code> path correctly off by default. No leaks of consequence found in project code.</p>
+
+<h3>4.12 Configuration & parameters</h3>
+<p>PID live-tuning via parameters is well done. Gaps: safety_monitor's simulate-by-default (F20), BT magic numbers (F24), THR_DZ hardcoded (F10), <code>TURN_90_SECONDS</code>/<code>ROTATE_90_SECONDS</code> calibration constants shared by several scripts but owned by none, and the known param-drift problem (MOT_x_DIRECTION incident) — keep diffing live params against <code>pixhawk_params_4.5.7_backup_2026-07-08.param</code> before every water day; consider automating that diff in <code>boot_check.py</code>.</p>
+
+<h3>4.13 Testing gaps</h3>
+<p>Only colcon lint templates exist. Highest-value additions, in order: (1) a message-compat smoke test (catches F2 class instantly); (2) unit tests for <code>centering.py</code> and <code>_parse_yolo</code>/letterbox round-trip (pure functions, easy); (3) a signed-rotation test for the turn integrators once F7 is fixed; (4) a bench "arm-check" script asserting mode/arm/ack discipline against the real Pixhawk; (5) SITL (ArduSub SIM) run of gate_task before each competition day.</p>
+
+<h3>4.14 Security</h3>
+<p>Threat surface is physical/serial, not network: no exposed services, no shell injection paths found; <code>deploy_model.sh</code>/setup scripts are local-only. MAVLink is unsigned but that's standard for a tethered/local link. No action needed beyond not bridging the ROS domain to hotel Wi-Fi.</p>
+
+<h3>4.15 Code quality & refactoring</h3>
+<p>Working-tree Python is consistently documented (docstrings encode field lessons — genuinely valuable). Priorities: unify the two inference threads (F12), extract one shared MAVLink helper (connect/ack/param-set logic exists in five copies with different bug levels), retire legacy runners (F25), and converge on one depth authority and one heading convention. The C++ BT code is tidy; its problem is emptiness, not quality.</p>
+
+<h3>4.16 Prioritized action plan</h3>
+<ol>
+<li><strong>Sync + rebuild + smoke test</strong> (F1, F2, F3) — blocks everything; do it today.</li>
+<li><strong>Stale-depth + mode watch in the depth path</strong> (F4, and verify DepthKeeper's staleness handling in water) — this is the one that sinks the sub.</li>
+<li><strong>Signed rotation integration</strong> (F7) — style points and every closed-loop turn depend on it.</li>
+<li><strong>Re-arm policy + simulate opt-in + ack filtering</strong> (F5, F6, F16) — one afternoon in thruster_node.</li>
+<li><strong>THR_DZ mapping in set_axes</strong> (F10) — small change, directly improves depth hold quality.</li>
+<li><strong>Bottom camera fix + model deploy</strong> (F12) — unblocks bins/drift correction.</li>
+<li><strong>ZED tracking-state gating</strong> (F8).</li>
+<li><strong>Dropper passive-recv mode</strong> (F17) then wire it into the mission (F14) — the hardware already works; this is pure integration.</li>
+<li><strong>Controller fixes if BT/waypoint modes will be used</strong> (F9, F13, F18); otherwise explicitly fence them off.</li>
+<li><strong>Mission-end surfacing + disarm interface</strong> (F11, F22).</li>
+</ol>
+
+<h3>4.17 Scores</h3>
+<div class="scores">
+<div class="score"><div class="n">4 / 10</div><div class="l">Competition readiness</div></div>
+<div class="score"><div class="n">4 / 10</div><div class="l">Reliability</div></div>
+<div class="score"><div class="n">6 / 10</div><div class="l">Maintainability</div></div>
+<div class="score"><div class="n">3 / 10</div><div class="l">Safety</div></div>
+</div>
+<p><strong>Estimated probability of completing a full autonomous RoboSub mission</strong> (gate + slalom + bins + torpedoes + octagon + return, as the BT defines it): <strong>≈ 2–5%</strong> — the BT's task leaves are stubs and manipulation is unwired. <strong>Probability of a clean gate task with style</strong> (the Python stack, after the sync/rebuild and F4/F7 fixes, given the Bar02 behaves): <strong>≈ 50–65%</strong>, dominated by the Bar02's intermittent connection and ZED tracking dropouts rather than by code. Those two hardware risks deserve as much attention as anything in this report: a re-seated/strain-relieved Bar02 cable is worth more than most software fixes listed here.</p>
+
+<p class="metaline" style="margin-top:48px">Audited by Claude (Fable 5) · methodology: full read of project source (root scripts, all seven first-party ROS packages, origin/main diff), execution-path tracing from sensor ingest to MANUAL_CONTROL frames; vendored zed-ros2-wrapper / BehaviorTree.ROS2 excluded. Confidence levels reflect static analysis on-vehicle without water tests.</p>
+</main>

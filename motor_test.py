@@ -46,6 +46,7 @@ from pymavlink import mavutil
 DEFAULT_PORT = '/dev/ttyACM0'
 DEFAULT_BAUD = 115200
 THROTTLE_TYPE_PERCENT = 0        # MOTOR_TEST_THROTTLE_PERCENT
+MOTOR_TEST_ORDER_BOARD = 2       # p6: match motor numbering to SERVOn order
 
 
 def connect(port, baud):
@@ -62,8 +63,14 @@ def connect(port, baud):
 def _drain(master):
     """Discard buffered messages so a stale COMMAND_ACK from a previous step
     can't be misread as this command's result."""
-    while master.recv_match(blocking=False) is not None:
-        pass
+    while True:
+        try:
+            if master.recv_match(blocking=False) is None:
+                return
+        except TypeError:
+            # old pymavlink crashes in post_message() on some instanced
+            # messages (TypeError: 'NoneType' ... _instances) — skip it
+            continue
 
 
 def motor_test(master, motor, throttle_pct, duration):
@@ -83,11 +90,14 @@ def motor_test(master, motor, throttle_pct, duration):
         throttle_pct,           # p3: throttle value
         duration,               # p4: timeout / spin time (s)
         0,                      # p5: motor count (0 = just this one)
-        0,                      # p6: test order
+        MOTOR_TEST_ORDER_BOARD, # p6: test order
         0)
     deadline = time.time() + 4
     while time.time() < deadline:
-        ack = master.recv_match(type='COMMAND_ACK', blocking=True, timeout=1)
+        try:
+            ack = master.recv_match(type='COMMAND_ACK', blocking=True, timeout=1)
+        except TypeError:
+            continue
         if ack is None:
             continue
         if ack.command == mavutil.mavlink.MAV_CMD_DO_MOTOR_TEST:
@@ -110,7 +120,10 @@ def arm(master, want_armed):
         master.target_system, master.target_component,
         mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM, 0,
         1 if want_armed else 0, 0, 0, 0, 0, 0, 0)
-    ack = master.recv_match(type='COMMAND_ACK', blocking=True, timeout=3)
+    try:
+        ack = master.recv_match(type='COMMAND_ACK', blocking=True, timeout=3)
+    except TypeError:
+        ack = None
     verb = 'Arm' if want_armed else 'Disarm'
     if ack is None:
         print(f'{verb}: NO ACK')
