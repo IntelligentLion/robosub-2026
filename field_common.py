@@ -46,6 +46,17 @@ from nav_msgs.msg import Odometry
 from std_msgs.msg import Float32
 from auv_msgs.msg import MovementCommand, ObjectDetectionArray
 
+# F2 guard: symlink-install makes Python edits live but auv_msgs is GENERATED
+# code in install/ — after any pull touching msg/, DepthKeeper._send would die
+# on the first tick with AttributeError inside a daemon thread. Fail at import
+# instead, with the fix in the message.
+if not hasattr(MovementCommand(), 'pitch_rate'):
+    raise ImportError(
+        'auv_msgs is STALE (MovementCommand has no pitch_rate). Rebuild:\n'
+        '  colcon build --symlink-install --packages-select auv_msgs '
+        'mavlink_thruster_control bt_mission\n'
+        '  source install/setup.bash')
+
 # pymavlink 2.4.49 add_message bug: a MAVLink1 packet (no instance field)
 # stores a message with _instances=None; a later MAVLink2 packet of the same
 # type with an instance field then does messages[mtype]._instances[i] = msg
