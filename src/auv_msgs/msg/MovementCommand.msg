@@ -25,6 +25,13 @@
 #      strafe    - right (+) / left (-)
 #      heave     - down (+) / up (-)        (0 = hold depth in ALT_HOLD)
 #      yaw_rate  - clockwise (+) / counter-clockwise (-)
+#      pitch_rate - nose up (+) / nose down (-)
+#      roll_rate  - right-side down (+) / left-side down (-)
+#
+# pitch_rate / roll_rate ride on the MAVLink2 MANUAL_CONTROL extension fields
+# s / t (enabled_extensions bits 0/1). They require a frame with roll/pitch
+# authority (FRAME_CONFIG = Vectored-6DOF); on other frames ArduSub ignores
+# them. Leave at 0.0 for level flight.
 #
 string command
 float32 speed        # 0.0 to 1.0 normalized intensity (verb mode)
@@ -33,3 +40,5 @@ float32 surge        # -1.0..1.0 (axes mode only; +forward)
 float32 strafe       # -1.0..1.0 (axes mode only; +right)
 float32 heave        # -1.0..1.0 (axes mode only; +down)
 float32 yaw_rate     # -1.0..1.0 (axes mode only; +clockwise)
+float32 pitch_rate   # -1.0..1.0 (axes mode only; +nose-up)
+float32 roll_rate    # -1.0..1.0 (axes mode only; +right-side-down)
