@@ -1,0 +1,55 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+Visualization Manager:
+  Global Options:
+    Fixed Frame: odom
+    Background Color: 48; 48; 48
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Grid
+      Enabled: true
+      Plane Cell Count: 10
+      Cell Size: 0.5
+    - Class: rviz_default_plugins/TF
+      Name: TF
+      Enabled: true
+      Show Names: true
+      Show Axes: true
+      Show Arrows: true
+      Marker Scale: 0.5
+    - Class: rviz_default_plugins/Axes
+      Name: BaseLinkAxes
+      Enabled: true
+      Reference Frame: base_link
+      Length: 0.4
+      Radius: 0.03
+    - Class: rviz_default_plugins/Imu
+      Name: Imu
+      Enabled: true
+      Topic:
+        Value: /zed2i/zed_node/imu/data
+        Depth: 5
+        Reliability: Best Effort
+        History: Keep Last
+      Box Scale: 0.3
+      Acc. vector scale: 0.1
+      Enable acceleration: true
+    - Class: rviz_default_plugins/MarkerArray
+      Name: IMU Markers
+      Enabled: true
+      Topic:
+        Value: /imu/markers
+        Depth: 5
+        Reliability: Reliable
+        History: Keep Last
+  Tools:
+    - Class: rviz_default_plugins/MoveCamera
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 3.0
+      Focal Point:
+        X: 0
+        Y: 0
+        Z: 0
