@@ -21,7 +21,8 @@ setup(
     entry_points={
         'console_scripts': [
             'autonomous_controller = control.autonomous_controller:main',
-            'heading_lock_node = control.heading_lock_node:main',
+            'motion_node = control.motion_node:main',
+            'rviz_visualizer = control.rviz_visualizer:main',
         ],
     },
 )
