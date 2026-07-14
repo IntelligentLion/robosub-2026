@@ -115,7 +115,7 @@ Drifted CW (nose right): `current_yaw` decreased → `error_cw < 0` → `yaw_rat
 **Unit (`tests/test_heading_lock.py`, pure logic, no ROS):**
 1. `start` captures target; state LOCKED.
 2. CW drift (yaw decreases) → negative yaw_rate (CCW correction); CCW drift → positive. Both directions.
-3. Wrap: target +170°, current −170° → error −20° (not +340°), correction CW.
+3. Wrap: target +170°, current −170° → error = wrap(current − target) = +20° (not −340°), correction CW (+).
 4. Output clamped to ±max_yaw_authority; surge equals base_speed always.
 5. Stale: within grace → yaw_rate 0 + surge continues; past grace → ABORTED once.
 6. Recovery in grace keeps original target.
