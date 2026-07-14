@@ -1,0 +1,13 @@
+# Request an ArduSub flight-mode change and confirm it actually took.
+#
+# The gateway sends set_mode, then waits for HEARTBEAT.custom_mode to READ
+# BACK the requested mode. "We sent the request" is not the same claim as
+# "the vehicle is in that mode": with a dead Bar02, ArduSub refuses ALT_HOLD
+# and silently stays in whatever mode it was already in. Callers must treat
+# success=false as a hard abort — diving without a confirmed ALT_HOLD means
+# descending with no depth hold.
+string mode        # MANUAL | STABILIZE | ALT_HOLD | ACRO
+---
+bool success       # true only if custom_mode read back as `mode`
+string reason      # ArduSub STATUSTEXT on failure (e.g. "Depth sensor is not
+                   # connected."); empty string on success
