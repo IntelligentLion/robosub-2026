@@ -63,8 +63,8 @@ def generate_launch_description():
         condition=IfCondition(use_rviz))
 
     return LaunchDescription([
-        DeclareLaunchArgument('serial_number', default_value='',
-                              description='ZED serial to select one of two cameras'),
+        DeclareLaunchArgument('serial_number', default_value='0',
+                              description='ZED serial to select one of two cameras; 0 = first available'),
         DeclareLaunchArgument('camera_name', default_value='zed2i'),
         DeclareLaunchArgument('rviz', default_value='true'),
         DeclareLaunchArgument('start_zed', default_value='true',
