@@ -25,12 +25,26 @@ Features
 
 import glob
 import math
+import threading
 import time as _time
 from typing import Any
 import rclpy
 from rclpy.node import Node
 from rclpy.duration import Duration
+from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.executors import MultiThreadedExecutor
+from sensor_msgs.msg import Imu
+from std_msgs.msg import Bool, Float32, String
+from std_srvs.srv import Trigger
+
 from auv_msgs.msg import MovementCommand
+from auv_msgs.srv import SetFlightMode
+
+from mavlink_thruster_control.pressure import (
+    PRESSURE_TYPES, depth_from_pressure, latch_surface, pick_pressure_type,
+    surface_sane)
+from mavlink_thruster_control.thruster_params import (
+    ALL_MOTORS, compare, expected_params)
 
 # pymavlink is an optional dependency: without it the node runs in simulation.
 # mavutil is typed Any so guarded uses aren't flagged; it is only ever
@@ -39,9 +53,29 @@ from auv_msgs.msg import MovementCommand
 mavutil: Any = None
 try:
     from pymavlink import mavutil  # type: ignore
+    from mavlink_thruster_control.mavlink_compat import (
+        install_add_message_guard)
+    # MUST run before any mavlink_connection(): without it, one MAVLink1 packet
+    # poisons the message cache and the next MAVLink2 packet of that type kills
+    # the entire receive path with a TypeError.
+    install_add_message_guard()
     HAS_MAVLINK = True
 except ImportError:
     HAS_MAVLINK = False
+
+G = 9.80665                     # m/s^2 — RAW_IMU accel arrives in mg
+
+
+def _quat_from_euler(roll, pitch, yaw):
+    """(x, y, z, w) from roll/pitch/yaw radians — REP-103 XYZ, matching the
+    convention imu/orientation_node already consumes from pix_imu."""
+    cr, sr = math.cos(roll / 2), math.sin(roll / 2)
+    cp, sp = math.cos(pitch / 2), math.sin(pitch / 2)
+    cy, sy = math.cos(yaw / 2), math.sin(yaw / 2)
+    return (sr * cp * cy - cr * sp * sy,
+            cr * sp * cy + sr * cp * sy,
+            cr * cp * sy - sr * sp * cy,
+            cr * cp * cy + sr * sp * sy)
 
 
 class ThrusterController(Node):
@@ -54,6 +88,13 @@ class ThrusterController(Node):
     ARMED_CHECK_INTERVAL_S = 5.0    # verify armed status every 5 s
     DEFAULT_WATCHDOG_S = 30.0       # stop if no command received for this long
 
+    # ── Gateway ─────────────────────────────────────────────────────────
+    TELEMETRY_RATE_HZ = 10.0        # imu/depth/mode republish rate
+    SURFACE_SAMPLES = 10            # samples median-averaged into the zero ref
+    HEARTBEAT_STALE_S = 3.0         # no HEARTBEAT for this long → mode unknown
+    MODE_ACK_TIMEOUT_S = 3.0        # wait this long for a custom_mode readback
+    PARAM_READ_TIMEOUT_S = 3.0
+
     # ── ArduSub flight modes (custom_mode IDs) ──────────────────────────
     # ALT_HOLD is the default: the autopilot holds depth on the pressure
     # sensor while horizontal axes (surge/strafe/yaw) stay pilot-controlled
@@ -63,7 +104,7 @@ class ThrusterController(Node):
     DEFAULT_FLIGHT_MODE = 'ALT_HOLD'
     _MODE_IDS = {'STABILIZE': 0, 'ACRO': 1, 'ALT_HOLD': 2, 'MANUAL': 19}
 
-    def __init__(self, flight_mode=None):
+    def __init__(self, flight_mode=None, simulate=None):
         super().__init__('thruster_controller')
 
         # ── ROS parameters ──────────────────────────────────────────────
@@ -72,10 +113,43 @@ class ThrusterController(Node):
         self.declare_parameter('simulate', False)
         self.declare_parameter('watchdog_timeout', self.DEFAULT_WATCHDOG_S)
         self.declare_parameter('flight_mode', self.DEFAULT_FLIGHT_MODE)
+        self.declare_parameter('water_density', 1000.0)
 
         self.serial_port = self.get_parameter('serial_port').value
         self.baud_rate = self.get_parameter('baud_rate').value
-        self.simulate = self.get_parameter('simulate').value
+        # Explicit kwarg overrides the ROS param — tests pass simulate=True so
+        # constructing a node never reaches for a real serial port.
+        self.simulate = (bool(simulate) if simulate is not None
+                         else self.get_parameter('simulate').value)
+        self._rho = float(self.get_parameter('water_density').value)
+
+        # ── Gateway state ───────────────────────────────────────────────
+        # MUST be initialised BEFORE _connect_mavlink(): it calls
+        # _send_set_mode, which takes _tx_lock. (Learned the hard way — a
+        # missing _tx_lock here raised AttributeError inside the connect
+        # loop, which the broad `except` swallowed as "Failed on /dev/ttyACM0"
+        # and silently downgraded a healthy vehicle to SIMULATION mode.)
+        #
+        # These are written by the reader thread and read by the timers. Every
+        # value is a scalar or small immutable tuple and attribute assignment
+        # is atomic under the GIL, so the read side needs no lock. Serial
+        # WRITES do: the executor is multi-threaded, and two concurrent sends
+        # would interleave bytes and corrupt the MAVLink frame.
+        self._tx_lock = threading.Lock()
+        self._reader_stop = threading.Event()
+        self._reader_thread = None
+
+        self._attitude = None           # (roll, pitch, yaw, rr, pr, yr)
+        self._accel = (0.0, 0.0, 0.0)
+        self._pressure_type = None      # chosen SCALED_PRESSURE* variant
+        self._surface_samples = []
+        self._surface_hpa = None        # zero reference, once latched
+        self._depth_m = float('nan')
+        self._mode_name = 'UNKNOWN'
+        self._armed = False
+        self._last_hb_time = 0.0
+        self._last_statustext = ''
+
         wd = self.get_parameter('watchdog_timeout').value
         try:
             self.watchdog_timeout = (float(wd) if isinstance(wd, (int, float))
@@ -135,11 +209,33 @@ class ThrusterController(Node):
         self.create_subscription(
             MovementCommand, 'movement_command', self._movement_cb, 10)
 
+        self._imu_pub = self.create_publisher(Imu, 'pixhawk/imu/data', 10)
+        self._depth_pub = self.create_publisher(Float32, 'pixhawk/depth', 10)
+        self._mode_pub = self.create_publisher(String, 'pixhawk/mode', 10)
+        self._armed_pub = self.create_publisher(Bool, 'pixhawk/armed', 10)
+
+        # ReentrantCallbackGroup + MultiThreadedExecutor: _on_set_mode blocks
+        # for up to MODE_ACK_TIMEOUT_S waiting for the readback, and it must
+        # not stall the 1 Hz heartbeat while it does — a stalled heartbeat is
+        # what trips ArduSub's GCS failsafe and disarms us mid-dive.
+        self._svc_group = ReentrantCallbackGroup()
+        self.create_service(
+            SetFlightMode, 'pixhawk/set_mode', self._on_set_mode,
+            callback_group=self._svc_group)
+        self.create_service(
+            Trigger, 'pixhawk/preflight', self._on_preflight,
+            callback_group=self._svc_group)
+
         self.create_timer(0.1, self._control_loop)                # 10 Hz
+        self.create_timer(1.0 / self.TELEMETRY_RATE_HZ,
+                          self._publish_telemetry)                 # 10 Hz
         self.create_timer(self.HEARTBEAT_INTERVAL_S,
                           self._heartbeat_loop)                    #  1 Hz
         self.create_timer(self.ARMED_CHECK_INTERVAL_S,
                           self._check_armed_status)                # 0.2 Hz
+
+        if not self.simulate and self.connected:
+            self._start_reader()
 
         self.get_logger().info('Thruster controller initialized')
 
@@ -173,10 +269,9 @@ class ThrusterController(Node):
                 # ── Set flight mode (ALT_HOLD by default; MANUAL for dry-bench
                 #    / ZED depth-hold). manual_control drives the horizontal
                 #    axes in either mode; ALT_HOLD adds autopilot depth-hold. ──
-                self.master.mav.set_mode_send(
-                    self.master.target_system,
-                    mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
-                    self.flight_mode_id)
+                # Safe to recv_match here: the gateway reader thread is not
+                # started until after this method returns.
+                self._send_set_mode(self.flight_mode_id)
                 ack = self.master.recv_match(
                     type='COMMAND_ACK', blocking=True, timeout=3)
                 if ack:
@@ -207,13 +302,13 @@ class ThrusterController(Node):
         if self.master is None:
             return False
         try:
-            self.master.mav.command_long_send(
-                self.master.target_system,
-                self.master.target_component,
-                mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
-                0, 1, 0, 0, 0, 0, 0, 0)
-            ack = self.master.recv_match(
-                type='COMMAND_ACK', blocking=True, timeout=3)
+            with self._tx_lock:
+                self.master.mav.command_long_send(
+                    self.master.target_system,
+                    self.master.target_component,
+                    mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
+                    0, 1, 0, 0, 0, 0, 0, 0)
+            ack = self._wait_command_ack(timeout=3.0)
             if ack:
                 self.get_logger().info(f'Arm ACK: result={ack.result}')
                 if ack.result != 0:
@@ -235,11 +330,12 @@ class ThrusterController(Node):
         if self.master is None:
             return
         try:
-            self.master.mav.command_long_send(
-                self.master.target_system,
-                self.master.target_component,
-                mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
-                0, 0, 0, 0, 0, 0, 0, 0)
+            with self._tx_lock:
+                self.master.mav.command_long_send(
+                    self.master.target_system,
+                    self.master.target_component,
+                    mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
+                    0, 0, 0, 0, 0, 0, 0, 0)
             self.get_logger().info('Disarm command sent')
         except Exception:
             pass
@@ -316,74 +412,38 @@ class ThrusterController(Node):
         if self.simulate or not self.connected or self.master is None:
             return
         try:
-            self.master.mav.heartbeat_send(
-                mavutil.mavlink.MAV_TYPE_GCS,
-                mavutil.mavlink.MAV_AUTOPILOT_INVALID,
-                0, 0, 0)
+            with self._tx_lock:
+                self.master.mav.heartbeat_send(
+                    mavutil.mavlink.MAV_TYPE_GCS,
+                    mavutil.mavlink.MAV_AUTOPILOT_INVALID,
+                    0, 0, 0)
         except Exception as exc:
             self.get_logger().warn(f'Heartbeat send failed: {exc}')
 
     # ─── Armed-status monitor ──────────────────────────────────────────
 
-    def _passive_heartbeat(self):
-        """Latest HEARTBEAT via master.messages (no serial read). Returns
-        None if stale (>3s). Also surfaces new STATUSTEXT warnings."""
-        st = self.master.messages.get('STATUSTEXT')
-        if st is not None and st.severity <= 4:
-            ts = getattr(st, '_timestamp', 0.0)
-            if ts > getattr(self, '_last_statustext_ts', 0.0):
-                self._last_statustext_ts = ts
-                self.get_logger().error(f'ArduSub: {st.text}')
-        hb = self.master.messages.get('HEARTBEAT')
-        if hb is None or _time.time() - getattr(hb, '_timestamp', 0.0) > 3.0:
-            return None
-        return hb
-
     def _check_armed_status(self):
-        """Periodically verify the vehicle is still in the chosen mode & armed."""
+        """Periodically verify the vehicle is still in the chosen mode & armed.
+
+        Reads the CACHED heartbeat state. The gateway reader thread owns recv
+        on this port; a second reader here would race pyserial (select/read
+        from two threads → "device reports readiness to read but returned no
+        data") and steal its messages.
+        """
         if self.simulate or not self.connected or self.master is None:
             return
         try:
-            if getattr(self.master, '_external_recv_reader', False):
-                # Another thread (e.g. Bar02DepthSource streamer) owns the
-                # serial recv path — reading here too races pyserial
-                # (select/read from two threads → "device reports readiness
-                # to read but returned no data") and steals its messages.
-                # pymavlink stashes the latest of every message type in
-                # master.messages regardless of which thread recv'd it, so
-                # read passively from there instead.
-                hb = self._passive_heartbeat()
-            else:
-                # Drain HEARTBEAT for mode/arm state and surface STATUSTEXT —
-                # ArduSub reports mode-change rejections there (e.g. "Depth
-                # sensor is not connected." when ALT_HOLD needs the Bar02).
-                hb = None
-                for _ in range(100):
-                    msg = self.master.recv_match(
-                        type=['HEARTBEAT', 'STATUSTEXT'], blocking=False)
-                    if msg is None:
-                        break
-                    if msg.get_type() == 'STATUSTEXT':
-                        if msg.severity <= 4:   # WARNING or worse
-                            self.get_logger().error(f'ArduSub: {msg.text}')
-                        continue
-                    hb = msg
+            if (_time.time() - self._last_hb_time) > self.HEARTBEAT_STALE_S:
+                return                    # no fresh heartbeat — check next cycle
 
-            if hb is None:
-                return  # no fresh heartbeat — check next cycle
-
-            armed = bool(hb.base_mode
-                         & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED)
-            custom_mode = hb.custom_mode
+            armed = self._armed
+            custom_mode = self._MODE_IDS.get(self._mode_name, -1)
 
             if not armed:
                 self.get_logger().warn(
                     'Vehicle DISARMED unexpectedly – re-arming …')
                 # Ensure the configured flight mode before re-arming.
-                self.master.mav.set_mode_send(
-                    self.master.target_system,
-                    mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
-                    self.flight_mode_id)
+                self._send_set_mode(self.flight_mode_id)
                 _time.sleep(0.3)
                 if self._arm_vehicle():
                     self.get_logger().info('Re-armed successfully')
@@ -406,15 +466,289 @@ class ThrusterController(Node):
                     self.get_logger().warn(
                         f'Mode changed to {custom_mode} – switching back to '
                         f'{self.flight_mode_name} ({self.flight_mode_id})')
-                self.master.mav.set_mode_send(
-                    self.master.target_system,
-                    mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
-                    self.flight_mode_id)
+                self._send_set_mode(self.flight_mode_id)
             else:
                 self._mode_revert_count = 0
 
         except Exception as exc:
             self.get_logger().warn(f'Armed-status check error: {exc}')
+
+    # ─── Gateway: single serial reader ─────────────────────────────────
+
+    def _reader_running(self):
+        return self._reader_thread is not None and self._reader_thread.is_alive()
+
+    def _start_reader(self):
+        """One thread owns recv on this port. Two readers on one serial line
+        produce the "device reports readiness to read but returned no data"
+        stall — they race pyserial's select/read and steal each other's bytes.
+        Everything else in this node reads from the cache this thread fills."""
+        self._reader_stop.clear()
+        self._reader_thread = threading.Thread(
+            target=self._reader_loop, daemon=True, name='mav-reader')
+        self._reader_thread.start()
+        self.get_logger().info('MAVLink gateway reader started')
+
+    def _reader_loop(self):
+        wanted = ['ATTITUDE', 'RAW_IMU', 'HEARTBEAT', 'STATUSTEXT',
+                  'COMMAND_ACK', 'PARAM_VALUE']
+        wanted.extend(PRESSURE_TYPES)
+        while not self._reader_stop.is_set():
+            if self.master is None:
+                _time.sleep(0.1)
+                continue
+            try:
+                msg = self.master.recv_match(
+                    type=wanted, blocking=True, timeout=1.0)
+            except Exception as exc:
+                self.get_logger().warn(f'gateway recv error: {exc}')
+                _time.sleep(0.1)
+                continue
+            if msg is None:
+                continue
+            try:
+                self._on_mav_msg(msg)
+            except Exception as exc:
+                self.get_logger().warn(f'gateway decode error: {exc}')
+
+    def _on_mav_msg(self, msg):
+        """Single dispatch point for every received MAVLink message. Free of
+        serial I/O so tests can drive it with fakes."""
+        mtype = msg.get_type()
+        if mtype == 'ATTITUDE':
+            self._attitude = (msg.roll, msg.pitch, msg.yaw,
+                              msg.rollspeed, msg.pitchspeed, msg.yawspeed)
+        elif mtype == 'RAW_IMU':
+            self._accel = (msg.xacc / 1000.0 * G,
+                           msg.yacc / 1000.0 * G,
+                           msg.zacc / 1000.0 * G)
+        elif mtype in PRESSURE_TYPES:
+            self._on_pressure(mtype, msg.press_abs)
+        elif mtype == 'HEARTBEAT':
+            self._last_hb_time = _time.time()
+            self._armed = bool(msg.base_mode & 0x80)      # SAFETY_ARMED
+            self._mode_name = self._decode_mode(msg.custom_mode)
+        elif mtype == 'STATUSTEXT':
+            text = (msg.text.strip() if isinstance(msg.text, str)
+                    else str(msg.text))
+            self._last_statustext = text
+            if msg.severity <= 4:                          # WARNING or worse
+                self.get_logger().error(f'ArduSub: {text}')
+
+    def _on_pressure(self, mtype, press_abs):
+        """Latch the surface reference, then convert every reading to depth."""
+        if self._pressure_type is None:
+            chosen = pick_pressure_type([mtype])
+            if chosen is None:
+                # Instance-0 FMU baro: sealed in the hull, reads cabin air.
+                # Ignoring it entirely beats latching a "depth" that never
+                # responds to descent — ALT_HOLD would hold against a constant
+                # while the sub sinks.
+                return
+            self._pressure_type = chosen
+            self.get_logger().info(f'Depth source: {chosen}')
+        if mtype != self._pressure_type:
+            return
+
+        if self._surface_hpa is None:
+            self._surface_samples.append(press_abs)
+            if len(self._surface_samples) < self.SURFACE_SAMPLES:
+                return
+            candidate = latch_surface(self._surface_samples)
+            if candidate is None or not surface_sane(candidate):
+                self.get_logger().error(
+                    f'Surface pressure latch {candidate} hPa is implausible — '
+                    'depth stays unavailable. Is the sub at the surface?')
+                self._surface_samples.clear()
+                return
+            self._surface_hpa = candidate
+            self.get_logger().info(
+                f'Surface latched at {candidate:.1f} hPa — depth live')
+            return
+
+        self._depth_m = depth_from_pressure(
+            press_abs, self._surface_hpa, self._rho)
+
+    def _decode_mode(self, custom_mode):
+        for name, mid in self._MODE_IDS.items():
+            if mid == custom_mode:
+                return name
+        return f'UNKNOWN({custom_mode})'
+
+    def _wait_command_ack(self, timeout=3.0):
+        """COMMAND_ACK, without becoming a second reader on the port.
+
+        Once the gateway reader thread is running it owns recv, and pymavlink
+        stashes the latest of every message type in master.messages regardless
+        of which thread received it — so poll that instead of recv_match'ing.
+        """
+        if not self._reader_running():
+            return self.master.recv_match(
+                type='COMMAND_ACK', blocking=True, timeout=timeout)
+        self.master.messages.pop('COMMAND_ACK', None)
+        deadline = _time.monotonic() + timeout
+        while _time.monotonic() < deadline:
+            ack = self.master.messages.get('COMMAND_ACK')
+            if ack is not None:
+                return ack
+            _time.sleep(0.02)
+        return None
+
+    # ─── Gateway: telemetry publishers ─────────────────────────────────
+
+    def _publish_telemetry(self):
+        self._publish_imu()
+
+        d = Float32()
+        d.data = float(self._depth_m)
+        self._depth_pub.publish(d)
+
+        stale = (_time.time() - self._last_hb_time) > self.HEARTBEAT_STALE_S
+        m = String()
+        m.data = 'UNKNOWN' if stale else self._mode_name
+        self._mode_pub.publish(m)
+
+        a = Bool()
+        a.data = bool(self._armed and not stale)
+        self._armed_pub.publish(a)
+
+    def _publish_imu(self):
+        if self._attitude is None:
+            return
+        roll, pitch, yaw, rr, pr, yr = self._attitude
+        imu = Imu()
+        imu.header.stamp = self.get_clock().now().to_msg()
+        imu.header.frame_id = 'imu_link'
+        qx, qy, qz, qw = _quat_from_euler(roll, pitch, yaw)
+        imu.orientation.x = qx
+        imu.orientation.y = qy
+        imu.orientation.z = qz
+        imu.orientation.w = qw
+        imu.angular_velocity.x = rr
+        imu.angular_velocity.y = pr
+        imu.angular_velocity.z = yr
+        ax, ay, az = self._accel
+        imu.linear_acceleration.x = ax
+        imu.linear_acceleration.y = ay
+        imu.linear_acceleration.z = az
+        self._imu_pub.publish(imu)
+
+    # ─── Gateway: services ─────────────────────────────────────────────
+
+    def _send_set_mode(self, mode_id):
+        """Raw set_mode write. Split out so tests can stub the serial away."""
+        with self._tx_lock:
+            self.master.mav.set_mode_send(
+                self.master.target_system,
+                mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
+                mode_id)
+
+    def _on_set_mode(self, request, response):
+        """Set the mode, then require the HEARTBEAT to READ IT BACK.
+
+        Sending the request is not evidence it took. ArduSub refuses ALT_HOLD
+        outright when the depth sensor is missing and silently stays in its
+        current mode, announcing the refusal only via STATUSTEXT. A caller that
+        trusts the send would then dive with no depth hold, which is how a sub
+        ends up on the bottom.
+        """
+        mode = (request.mode or '').upper().strip()
+        if mode not in self._MODE_IDS:
+            response.success = False
+            response.reason = (f'unknown mode "{request.mode}" — expected one '
+                               f'of {sorted(self._MODE_IDS)}')
+            self.get_logger().warn(response.reason)
+            return response
+
+        # Record the target FIRST: the 0.2 Hz watchdog enforces THIS mode from
+        # now on, instead of reverting us to the old one five seconds later.
+        self.flight_mode_name = mode
+        self.flight_mode_id = self._MODE_IDS[mode]
+        self._mode_revert_count = 0
+
+        if self.simulate or not self.connected or self.master is None:
+            response.success = True
+            response.reason = ''
+            return response
+
+        self._last_statustext = ''
+        try:
+            self._send_set_mode(self.flight_mode_id)
+        except Exception as exc:
+            response.success = False
+            response.reason = f'set_mode send failed: {exc}'
+            self.get_logger().error(response.reason)
+            return response
+
+        deadline = _time.monotonic() + self.MODE_ACK_TIMEOUT_S
+        while _time.monotonic() < deadline:
+            if self._mode_name == mode:
+                self.get_logger().info(f'Flight mode confirmed: {mode}')
+                response.success = True
+                response.reason = ''
+                return response
+            _time.sleep(0.05)
+
+        reason = (f'{mode} not confirmed within {self.MODE_ACK_TIMEOUT_S:.0f}s '
+                  f'(vehicle still reports {self._mode_name})')
+        if self._last_statustext:
+            reason += f' — ArduSub: {self._last_statustext}'
+        response.success = False
+        response.reason = reason
+        self.get_logger().error(reason)
+        return response
+
+    def _read_param(self, name, timeout=None):
+        """Read one autopilot param. None on timeout.
+
+        READ-ONLY. There is deliberately no _write_param: ad-hoc runtime param
+        writes left MOT_5_DIRECTION and SERVO5/7_REVERSED drifted from the
+        backup and made a vertical thruster fight the other three during a dive
+        (2026-07-13). Persistent changes belong in the .param file / QGC.
+        """
+        timeout = self.PARAM_READ_TIMEOUT_S if timeout is None else timeout
+        self.master.messages.pop('PARAM_VALUE', None)
+        with self._tx_lock:
+            self.master.mav.param_request_read_send(
+                self.master.target_system, self.master.target_component,
+                name.encode('ascii'), -1)
+        deadline = _time.monotonic() + timeout
+        while _time.monotonic() < deadline:
+            msg = self.master.messages.get('PARAM_VALUE')
+            if msg is not None and msg.param_id == name:
+                return float(msg.param_value)
+            _time.sleep(0.02)
+        return None
+
+    def _on_preflight(self, request, response):
+        """Hard gate before any dive: do the live thruster params still match
+        the known-good backup?
+
+        A flipped VERTICAL makes one thruster fight the other three on heave —
+        the sub rolls and will not descend. A flipped HORIZONTAL turns a pure
+        forward command into a yaw torque — the sub spins instead of driving
+        straight. Both have happened here. No bypass flag.
+        """
+        if self.simulate:
+            response.success = True
+            response.message = 'SIMULATION — thruster params not checked'
+            return response
+
+        expected = expected_params(ALL_MOTORS)
+        live = {name: self._read_param(name) for name in expected}
+        ok, problems = compare(live, expected)
+
+        response.success = ok
+        if ok:
+            response.message = 'thruster config matches the known-good backup'
+            self.get_logger().info(response.message)
+        else:
+            response.message = (
+                'PREFLIGHT FAILED — live thruster config does not match '
+                'pixhawk_params_4.5.7_backup_2026-07-08.param:\n  '
+                + '\n  '.join(problems))
+            self.get_logger().error(response.message)
+        return response
 
     # ─── ROS callback ──────────────────────────────────────────────────
 
@@ -607,16 +941,17 @@ class ThrusterController(Node):
             # enabled_extensions bit 0 = pitch (s), bit 1 = roll (t) — MAVLink2
             # extension fields; ArduSub maps them to the pitch/roll inputs on
             # 6DOF frames and ignores them elsewhere.
-            self.master.mav.manual_control_send(
-                self.master.target_system,
-                x=safe_x,
-                y=safe_y,
-                z=safe_z,
-                r=safe_r,
-                buttons=0,
-                enabled_extensions=0b11,
-                s=safe_s,
-                t=safe_t)
+            with self._tx_lock:
+                self.master.mav.manual_control_send(
+                    self.master.target_system,
+                    x=safe_x,
+                    y=safe_y,
+                    z=safe_z,
+                    r=safe_r,
+                    buttons=0,
+                    enabled_extensions=0b11,
+                    s=safe_s,
+                    t=safe_t)
             # Reset error counter on success
             self._consecutive_errors = 0
             # Log values every 2 seconds (every 20th loop at 10 Hz)
@@ -641,15 +976,19 @@ class ThrusterController(Node):
 
     def destroy_node(self):
         self.get_logger().info('Shutting down – sending stop + disarm …')
+        self._reader_stop.set()
+        if self._reader_thread is not None and self._reader_thread.is_alive():
+            self._reader_thread.join(timeout=2.0)
         if self.master and self.connected:
             try:
                 self.stop()
                 # Flush several neutral frames to ensure Pixhawk receives
                 for _ in range(5):
-                    self.master.mav.manual_control_send(
-                        self.master.target_system,
-                        x=0, y=0, z=500, r=0, buttons=0,
-                        enabled_extensions=0b11, s=0, t=0)
+                    with self._tx_lock:
+                        self.master.mav.manual_control_send(
+                            self.master.target_system,
+                            x=0, y=0, z=500, r=0, buttons=0,
+                            enabled_extensions=0b11, s=0, t=0)
                     _time.sleep(0.05)
                 self._disarm_vehicle()
             except Exception:
@@ -660,8 +999,14 @@ class ThrusterController(Node):
 def main(args=None):
     rclpy.init(args=args)
     node = ThrusterController()
+    # MultiThreadedExecutor: _on_set_mode blocks for up to MODE_ACK_TIMEOUT_S
+    # waiting for the mode readback. Under the default single-threaded executor
+    # that would also stall the 1 Hz heartbeat, and a stalled heartbeat is what
+    # trips ArduSub's GCS failsafe and disarms us mid-dive.
+    executor = MultiThreadedExecutor()
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
+        executor.spin()
     except KeyboardInterrupt:
         pass
     finally:
