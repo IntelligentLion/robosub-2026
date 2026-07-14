@@ -321,6 +321,48 @@ def test_on_params_rejects_rate_hz_and_yaw_topic_live_change():
         node.destroy_node()
 
 
+@pytest.mark.parametrize('name, limit, attr', [
+    # A huge stale_timeout_s means _fresh_yaw() never returns None, so the
+    # whole staleness/abort contract is silently disabled and the sub steers
+    # on an arbitrarily old yaw sample. A huge grace_s means arbitrarily long
+    # blind forward. A huge stale_window_s means the duty-cycle window never
+    # fills and that abort never fires. All three need a finite ceiling.
+    ('stale_timeout_s', 2.0, lambda n: n._stale_timeout_s),
+    ('grace_s', 5.0, lambda n: n._lock.grace_s),
+    ('stale_window_s', 30.0, lambda n: n._stale_window_s),
+])
+def test_on_params_enforces_timing_upper_bounds(name, limit, attr):
+    node = make_node()
+    try:
+        # Accepted exactly AT the bound.
+        result = node._on_params([Parameter(name, value=limit)])
+        assert result.successful is True, f'{name} should accept {limit}'
+        assert attr(node) == pytest.approx(limit)
+
+        # Rejected just past it, and nothing is mutated.
+        before = attr(node)
+        over = limit + 0.1
+        result = node._on_params([Parameter(name, value=over)])
+        assert result.successful is False, f'{name} should reject {over}'
+        assert str(limit) in result.reason, (
+            f'reason should name the bound so a tuner sees why: {result.reason}')
+        assert attr(node) == pytest.approx(before)
+    finally:
+        node.destroy_node()
+
+
+def test_on_params_rejects_staleness_disabling_timeout():
+    """The concrete harm: `ros2 param set ... stale_timeout_s 999` must not
+    silently disable the staleness/abort contract."""
+    node = make_node()
+    try:
+        result = node._on_params([Parameter('stale_timeout_s', value=999.0)])
+        assert result.successful is False
+        assert node._stale_timeout_s == 0.5      # default, untouched
+    finally:
+        node.destroy_node()
+
+
 def test_on_params_rejects_bad_stale_duty_params():
     node = make_node()
     try:

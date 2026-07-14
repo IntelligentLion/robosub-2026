@@ -27,14 +27,18 @@ require a restart and are rejected by the validation callback):
   - kp, ki, kd, i_limit         PID gains (>= 0, finite)
   - max_yaw_authority           correction clamp, 0 < x <= 1
   - max_forward_speed           surge clamp, 0 < x <= 1
-  - stale_timeout_s             per-sample staleness age, > 0
-  - grace_s                     continuous-stale abort timer, > 0
+  - stale_timeout_s             per-sample staleness age, 0 < x <= 2.0
+  - grace_s                     continuous-stale abort timer, 0 < x <= 5.0
   - stale_window_s              sliding window for the stale DUTY CYCLE
-                                 abort below, > 0 (default 3.0)
+                                 abort below, 0 < x <= 30.0 (default 3.0)
   - stale_duty_abort            abort if the fraction of stale ticks over
                                  stale_window_s exceeds this, 0 < x <= 1
                                  (default 0.5)
   - rate_hz, yaw_topic           restart-only (rejected if set live)
+
+The timing ceilings above are SAFETY bounds, not taste — see
+TIMING_PARAM_MAX: without a finite upper bound, one `ros2 param set` can
+silently disable the staleness/abort contract entirely.
 
 Safety: yaw stale > stale_timeout_s -> correction zeroed; still stale after
 grace_s -> stop + unlock (blind forward is how the veer-right symptom hits
@@ -81,6 +85,24 @@ PARAM_DEFAULTS = {
 # Params that require a node restart to take effect; rejected if set live.
 RESTART_ONLY_PARAMS = ('rate_hz', 'yaw_topic')
 
+# Upper bounds on the timing params. These are SAFETY ceilings, not taste:
+# a lower bound alone leaves the staleness/abort contract disabled by a
+# single `ros2 param set` at the pool.
+#   stale_timeout_s huge -> _fresh_yaw() never returns None -> the sub
+#     steers on an arbitrarily old yaw sample and NOTHING ever goes stale,
+#     so neither the grace_s abort nor the duty-cycle abort can ever fire.
+#   grace_s huge -> arbitrarily long blind forward (yaw_rate pinned at 0)
+#     after the source dies — this is how the veer-right symptom hits walls.
+#   stale_window_s huge -> the duty-cycle window never fills, so the
+#     degraded-source abort never fires.
+# Ceilings are generous enough for any legitimate pool tuning; the point is
+# that they are finite.
+TIMING_PARAM_MAX = {
+    'stale_timeout_s': 2.0,
+    'grace_s': 5.0,
+    'stale_window_s': 30.0,
+}
+
 
 def _pf(value, default):
     """Total float coercion for ROS param reads (matches autonomous_controller)."""
@@ -115,13 +137,15 @@ def _validate_param(name, value):
             return f'{name} must satisfy 0 < {name} <= 1 (got {value!r})'
         return None
 
-    if name in ('stale_timeout_s', 'grace_s', 'stale_window_s'):
+    if name in TIMING_PARAM_MAX:
+        hi = TIMING_PARAM_MAX[name]
         try:
             v = float(value)
         except (TypeError, ValueError):
             return f'{name} must be a finite number (got {value!r})'
-        if not (math.isfinite(v) and v > 0.0):
-            return f'{name} must be > 0 (got {value!r})'
+        if not (math.isfinite(v) and 0.0 < v <= hi):
+            return (f'{name} must satisfy 0 < {name} <= {hi} '
+                    f'(got {value!r})')
         return None
 
     return None  # unknown/undeclared param names: nothing to validate here
