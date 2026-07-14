@@ -1,0 +1,72 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+    Property Tree Widget:
+      Expanded:
+        - /Markers1
+        - /Path1
+      Splitter Ratio: 0.5
+    Tree Height: 600
+Visualization Manager:
+  Class: ""
+  Name: root
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Grid
+      Enabled: true
+      Cell Size: 1
+      Plane: XY
+      Plane Cell Count: 20
+      Color: 160; 160; 164
+      Alpha: 0.3
+      Reference Frame: odom
+    - Class: rviz_default_plugins/TF
+      Name: TF
+      Enabled: true
+      Marker Scale: 0.6
+      Show Axes: true
+      Show Names: true
+      Show Arrows: false
+    - Class: rviz_default_plugins/MarkerArray
+      Name: Markers
+      Enabled: true
+      Topic:
+        Value: /viz/markers
+        Depth: 5
+        Durability Policy: Volatile
+        Reliability Policy: Reliable
+    - Class: rviz_default_plugins/Path
+      Name: Path
+      Enabled: true
+      Topic:
+        Value: /viz/path
+        Depth: 5
+        Durability Policy: Volatile
+        Reliability Policy: Reliable
+      Color: 255; 140; 0
+      Alpha: 1
+      Line Style: Lines
+  Global Options:
+    Background Color: 32; 36; 40
+    Fixed Frame: odom
+    Frame Rate: 30
+  Tools:
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/FocusCamera
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Name: Current View
+      Distance: 12
+      Pitch: 0.55
+      Yaw: 2.2
+      Focal Point:
+        X: 0
+        Y: 0
+        Z: 1
+      Target Frame: odom
+Window Geometry:
+  Height: 900
+  Width: 1400
+  Displays:
+    collapsed: false
