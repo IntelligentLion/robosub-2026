@@ -100,6 +100,14 @@ NEUTRAL_Z = 500                # centred vertical stick
 THROTTLE_DZ = 100              # Pixhawk THR_DZ: stick counts around neutral
                                # that ArduSub treats as zero climb rate. Any
                                # vertical command must exceed this to act.
+RAMP_SECONDS = 1.5             # soft-start: time to go from the min-effort
+                               # floor to the full P-controller effort after
+                               # a direction change (entering DESCEND/CORRECT
+                               # -UP, or reversing). All four vertical
+                               # thrusters share one manual_control z value —
+                               # ArduSub's mixer applies it to all of them in
+                               # the same frame — so ramping z ramps every
+                               # thruster identically and in lockstep.
 G = 9.80665                    # m/s^2
 FEET_TO_M = 0.3048
 
@@ -109,6 +117,7 @@ PRESSURE_TYPES = ['SCALED_PRESSURE2', 'SCALED_PRESSURE', 'SCALED_PRESSURE3']
 PRESSURE_MSG_IDS = {'SCALED_PRESSURE': 29,
                     'SCALED_PRESSURE2': 137,
                     'SCALED_PRESSURE3': 143}
+SERVO_OUTPUT_RAW_ID = 36       # actual PWM the FC drives each ESC with
 
 # Plausible absolute pressure at the surface (hPa). Outside this the sensor is
 # absent, broken, or scaled with the wrong-variant (30BA) math.
@@ -366,7 +375,7 @@ def request_streams(master, hz=10):
         master.target_system, master.target_component,
         mavutil.mavlink.MAV_DATA_STREAM_EXTRA3, hz, 1)
     interval_us = int(1e6 / hz)
-    for msg_id in PRESSURE_MSG_IDS.values():
+    for msg_id in list(PRESSURE_MSG_IDS.values()) + [SERVO_OUTPUT_RAW_ID]:
         master.mav.command_long_send(
             master.target_system, master.target_component,
             mavutil.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL,
@@ -506,6 +515,203 @@ def read_param(master, name, timeout=3.0):
     return None
 
 
+## MOT_x_DIRECTION for the 4 vertical thrusters (motors 5-8) and their
+# SERVOx_FUNCTION/REVERSED, from pixhawk_params_4.5.7_backup_2026-07-08.param
+# — the last known-good baseline. This is the one config that decides which
+# way the single `z` heave stick actually pushes water: if any one of these
+# is flipped relative to the rest, that thruster fights the other three
+# instead of adding to the descend/ascend push (this exact drift, on motor 5
+# and SERVO5/7_REVERSED, previously made the sub roll/fight during a dive —
+# see vertical_thruster_motor_test_red_herring in project memory). Checked
+# every run, unconditionally: no flag disables this, matching the
+# read-only-param policy on this script (see read_param's docstring).
+VERTICAL_MOTORS = (5, 6, 7, 8)
+# Horizontal vectored thrusters (motors 1-4), same backup. A single flipped
+# direction/function here turns a pure forward (x) command into a yaw torque
+# — the sub spins instead of driving straight — so scripts that command x/y
+# must gate on these too, not just the verticals.
+HORIZONTAL_MOTORS = (1, 2, 3, 4)
+# Mixer forward factors for FRAME_CONFIG=2 (VECTORED_6DOF), from ArduSub 4.5
+# AP_Motors6DOF.cpp setup_motors(). PWM offset for a pure surge command is
+# x * factor * MOT_x_DIRECTION; with the backup directions (-1,-1,+1,+1) the
+# product is +1 for all four horizontals, so a pure x command drives every
+# horizontal thruster the same way — same side of trim, all pushing the sub
+# in the same direction. The PWM watchdog checks this live during a surge.
+FWD_FACTOR = {1: -1.0, 2: -1.0, 3: 1.0, 4: 1.0}
+EXPECT_MOT_DIRECTION = {1: -1.0, 2: -1.0, 3: 1.0, 4: 1.0,
+                        5: -1.0, 6: 1.0, 7: 1.0, 8: -1.0}
+EXPECT_SERVO_FUNCTION = {1: 33.0, 2: 34.0, 3: 35.0, 4: 36.0,
+                         5: 37.0, 6: 38.0, 7: 39.0, 8: 40.0}
+EXPECT_SERVO_REVERSED = {m: 0.0 for m in range(1, 9)}
+# PWM endpoints/neutral, same backup. The PWM watchdog uses these to spot
+# saturated or dead outputs; the preflight verifies they haven't drifted.
+EXPECT_SERVO_TRIM = 1500.0
+EXPECT_SERVO_MIN = 1100.0
+EXPECT_SERVO_MAX = 1900.0
+
+
+def verify_thruster_params(master, motors, label):
+    """Hard gate: compare live MOT_x_DIRECTION / SERVOx_FUNCTION /
+    SERVOx_REVERSED / SERVOx_TRIM/MIN/MAX for the given motors against the
+    known-good backup. Returns True only if every value matches. No bypass
+    flag — a mismatch means a stick command will not map to coherent thrust
+    (verticals fight on z; a flipped horizontal turns forward thrust into a
+    spin), which is unsafe to run regardless of the rest of the preflight."""
+    print(f'Verifying {label} thruster direction/function params…')
+    ok = True
+    for m in motors:
+        checks = (
+            (f'MOT_{m}_DIRECTION', EXPECT_MOT_DIRECTION[m]),
+            (f'SERVO{m}_FUNCTION', EXPECT_SERVO_FUNCTION[m]),
+            (f'SERVO{m}_REVERSED', EXPECT_SERVO_REVERSED[m]),
+            (f'SERVO{m}_TRIM', EXPECT_SERVO_TRIM),
+            (f'SERVO{m}_MIN', EXPECT_SERVO_MIN),
+            (f'SERVO{m}_MAX', EXPECT_SERVO_MAX),
+        )
+        for name, expect in checks:
+            val = read_param(master, name)
+            if val is None:
+                print(f'  {name}: NO RESPONSE — cannot confirm. Aborting.')
+                ok = False
+                continue
+            match = abs(val - expect) < 0.5
+            print(f'  {name} = {val:+.0f} (expect {expect:+.0f})'
+                  + ('' if match else '  <-- MISMATCH'))
+            if not match:
+                ok = False
+    if ok:
+        print(f'{label} thruster config: matches known-good backup.')
+    else:
+        print(f'ABORT: {label} thruster config does NOT match the '
+              'known-good backup (pixhawk_params_4.5.7_backup_2026-07-08.param). '
+              'Stick commands would not map to coherent thrust — fix the '
+              'flagged param(s) in QGC/the backup file before diving. '
+              'This check cannot be skipped.')
+    return ok
+
+
+def verify_vertical_thruster_directions(master):
+    """Back-compat wrapper: hard-gate the 4 vertical thrusters (5-8)."""
+    return verify_thruster_params(master, VERTICAL_MOTORS, 'vertical (5-8)')
+
+
+def verify_horizontal_thruster_directions(master):
+    """Hard-gate the 4 horizontal vectored thrusters (1-4). Required before
+    any script that commands x/y: one flipped horizontal makes a forward
+    command yaw the sub instead of driving it straight."""
+    return verify_thruster_params(master, HORIZONTAL_MOTORS,
+                                  'horizontal (1-4)')
+
+
+class PwmMonitor:
+    """Watch SERVO_OUTPUT_RAW — the actual PWM the FC drives each ESC with —
+    for vertical-thruster abnormalities. This is the ground truth for "did the
+    mixer turn my z command into a coherent submerge push": params can look
+    right and the sub still not move if an output is dead, saturated, or
+    fighting the others.
+
+    Checks each update (all rate-limited to one print per 2 s per kind):
+      * dead output: a vertical channel reporting 0 (FC not driving that pin)
+      * saturation: a vertical pinned at SERVO_MIN/MAX (controller demanding
+        more than the thruster can give — trim/ballast problem)
+      * fight: with z commanded past the deadzone, the sign of each vertical's
+        thrust — (pwm - trim) * MOT_x_DIRECTION — must agree across all four.
+        A split means one thruster pushes against the other three: the exact
+        failure the param preflight guards against, caught here at runtime.
+      * no response: z commanded past the deadzone but every vertical still
+        sits at trim — mixer is not listening (wrong mode / not armed /
+        another writer on the port).
+
+    With an x (surge) command it also checks the horizontals (1-4): each
+    live output's PWM offset sign must match x * FWD_FACTOR *
+    MOT_x_DIRECTION — on this frame/params that means all four on the same
+    side of trim, all pushing the same direction. A mismatch or a horizontal
+    stuck at trim during a surge means the sub will spin or crab instead of
+    driving straight.
+    """
+
+    WARN_PERIOD = 2.0
+    ACTIVE_PWM = 40         # |pwm - trim| beyond this counts as "driving"
+    ACTIVE_X = 50           # |x| beyond this counts as "commanding surge"
+
+    def __init__(self):
+        self.pwm = None                 # latest 8-tuple, servo1..8
+        self._last_warn = {}
+
+    def _warn(self, key, text):
+        now = time.monotonic()
+        if now - self._last_warn.get(key, 0.0) >= self.WARN_PERIOD:
+            self._last_warn[key] = now
+            print(f'PWM WATCH: {text}')
+
+    def update(self, pwm, z_cmd, x_cmd=0):
+        """Feed one SERVO_OUTPUT_RAW frame (8-tuple) + the z/x just
+        commanded. x_cmd=0 skips the horizontal check (depth-only runs)."""
+        self.pwm = pwm
+        if abs(x_cmd) > self.ACTIVE_X:
+            self._check_horizontals(pwm, x_cmd)
+        vert = {m: pwm[m - 1] for m in VERTICAL_MOTORS}
+        for m, p in vert.items():
+            if p == 0:
+                self._warn(f'dead{m}', f'motor {m} output is 0 — FC is not '
+                           f'driving that channel.')
+            elif p <= EXPECT_SERVO_MIN + 2 or p >= EXPECT_SERVO_MAX - 2:
+                self._warn(f'sat{m}', f'motor {m} saturated at {p} — '
+                           f'controller is demanding more than the thruster '
+                           f'can give.')
+        commanding = abs(z_cmd - NEUTRAL_Z) > THROTTLE_DZ
+        live = {m: p for m, p in vert.items() if p != 0}
+        if not commanding or len(live) < len(vert):
+            return
+        signs = {m: (p - EXPECT_SERVO_TRIM) * EXPECT_MOT_DIRECTION[m]
+                 for m, p in live.items()
+                 if abs(p - EXPECT_SERVO_TRIM) > self.ACTIVE_PWM}
+        if not signs:
+            self._warn('noresp', f'z={z_cmd} commanded but all verticals at '
+                       f'trim ({self.fmt()}) — mixer not responding '
+                       f'(mode? armed? second writer on the port?)')
+        elif min(signs.values()) < 0 < max(signs.values()):
+            detail = ' '.join(f'm{m}:{vert[m]}({"+" if s > 0 else "-"})'
+                              for m, s in sorted(signs.items()))
+            self._warn('fight', f'vertical thrust signs disagree — {detail} '
+                       f'— one thruster is fighting the others.')
+
+    def _check_horizontals(self, pwm, x_cmd):
+        """Surge in progress: every horizontal must push the way x says."""
+        horiz = {m: pwm[m - 1] for m in HORIZONTAL_MOTORS}
+        live = {m: p for m, p in horiz.items() if p != 0}
+        for m in HORIZONTAL_MOTORS:
+            if m not in live:
+                self._warn(f'hdead{m}', f'motor {m} output is 0 during surge '
+                           f'— FC is not driving that channel.')
+        wrong, idle = [], []
+        for m, p in live.items():
+            expect = x_cmd * FWD_FACTOR[m] * EXPECT_MOT_DIRECTION[m]
+            offset = p - EXPECT_SERVO_TRIM
+            if abs(offset) <= self.ACTIVE_PWM:
+                idle.append(m)
+            elif offset * expect < 0:
+                wrong.append((m, p))
+        if wrong:
+            detail = ' '.join(f'm{m}:{p}' for m, p in wrong)
+            self._warn('hwrong', f'x={x_cmd} commanded but {detail} pushing '
+                       f'the WRONG direction — sub will spin/crab, not drive '
+                       f'straight.')
+        elif len(idle) == len(live):
+            self._warn('hnoresp', f'x={x_cmd} commanded but all horizontals '
+                       f'at trim ({self.fmt()}) — mixer not responding.')
+        elif idle:
+            detail = ' '.join(f'm{m}' for m in sorted(idle))
+            self._warn('hidle', f'x={x_cmd} commanded but {detail} sitting at '
+                       f'trim — not contributing to the surge.')
+
+    def fmt(self):
+        """Compact all-8 PWM string for the telemetry line."""
+        if self.pwm is None:
+            return 'pwm=n/a'
+        return 'pwm=' + ','.join(str(p) for p in self.pwm)
+
+
 def vertical_z(effort, direction):
     """Map an effort fraction (0..1) to a manual_control z that actually
     exceeds the ALT_HOLD stick deadzone (THR_DZ). Effort then scales the
@@ -528,20 +734,29 @@ def send_frame(master, z, x=0, y=0, r=0):
 
 
 def drain_depth(master, surface_hpa, rho, ptype):
-    """Pull all buffered pressure + attitude msgs. Returns (depth_m, yaw_rad),
-    either None if no fresh message of that kind was buffered. Yaw is the
-    Pixhawk EKF heading (ATTITUDE.yaw) — what ALT_HOLD is actually holding."""
+    """Pull all buffered pressure + attitude + servo-output msgs. Returns
+    (depth_m, yaw_rad, pwm), each None if no fresh message of that kind was
+    buffered. Yaw is the Pixhawk EKF heading (ATTITUDE.yaw) — what ALT_HOLD is
+    actually holding. pwm is the servo1..8 output tuple from SERVO_OUTPUT_RAW
+    — the actual PWM sent to the ESCs."""
     depth = None
     yaw = None
+    pwm = None
     while True:
-        msg = master.recv_match(type=[ptype, 'ATTITUDE'], blocking=False)
+        msg = master.recv_match(type=[ptype, 'ATTITUDE', 'SERVO_OUTPUT_RAW'],
+                                blocking=False)
         if msg is None:
             break
-        if msg.get_type() == 'ATTITUDE':
+        mtype = msg.get_type()
+        if mtype == 'ATTITUDE':
             yaw = msg.yaw
+        elif mtype == 'SERVO_OUTPUT_RAW':
+            pwm = (msg.servo1_raw, msg.servo2_raw, msg.servo3_raw,
+                   msg.servo4_raw, msg.servo5_raw, msg.servo6_raw,
+                   msg.servo7_raw, msg.servo8_raw)
         else:
             depth = (msg.press_abs - surface_hpa) * 100.0 / (rho * G)
-    return depth, yaw
+    return depth, yaw, pwm
 
 
 def main():
@@ -554,6 +769,10 @@ def main():
                     help='target depth in FEET below surface (default 3.0)')
     ap.add_argument('--hold-duration', type=float, default=20.0,
                     help='seconds to hold once target reached (default 20)')
+    ap.add_argument('--run-seconds', type=float, default=2.0,
+                    help='hard cap on the dive loop: surface + disarm this '
+                         'many seconds after arming, even if the target/hold '
+                         'was never reached (0 = no cap; default 2)')
     ap.add_argument('--kp', type=float, default=2.0,
                     help='gain: climb-rate fraction per metre of error')
     ap.add_argument('--speed', type=float, default=1.0,
@@ -625,6 +844,11 @@ def main():
         max_depth_m = bar02_limit_m
 
     master = connect(args.port, args.baud)
+
+    if not verify_vertical_thruster_directions(master):
+        master.close()
+        return 1
+
     request_streams(master)
 
     print('Detecting depth/pressure source…')
@@ -670,8 +894,11 @@ def main():
         master.close()
         return 0
 
+    cap_str = (f'Run capped at {args.run_seconds:.1f}s (--run-seconds). '
+               if args.run_seconds > 0 else '')
     print(f'\nWILL SUBMERGE to {target_m:.2f} m ({args.depth:.1f} ft) via '
           f'ALT_HOLD, hold {args.hold_duration:.0f}s, then surface. '
+          f'{cap_str}'
           f'Vertical strength scale --speed={args.speed:.2f}. '
           f'THRUSTERS WILL SPIN.')
     if not args.yes:
@@ -734,13 +961,21 @@ def main():
     # heading is being dragged (compass interference) and ALT_HOLD follows it.
     pix_yaw = zed_yaw = None
     pix_yaw0 = zed_yaw0 = None
+    move_dir = 0             # -1 descend, 0 hold, +1 ascend — direction of
+                              # the last commanded vertical effort
+    ramp_t0 = None            # monotonic time the current direction began
+    pwm_mon = PwmMonitor()
+    last_z = NEUTRAL_Z        # z sent last tick — what the drained PWM answers
+    run_t0 = time.monotonic()  # --run-seconds cap counts from here (post-arm)
 
     try:
         while True:
             loops += 1
-            d, py = drain_depth(master, surface_hpa, rho, ptype)
+            d, py, pwm = drain_depth(master, surface_hpa, rho, ptype)
             if d is not None:
                 depth = d
+            if pwm is not None:
+                pwm_mon.update(pwm, last_z)
             if py is not None:
                 pix_yaw = py
                 if pix_yaw0 is None:
@@ -771,30 +1006,38 @@ def main():
                       f'(max {max_depth_m:.2f} m) — surfacing.')
             if aborted:
                 if depth > args.deadband:
-                    send_frame(master,
-                               vertical_z(args.speed * args.min_speed, +1),
-                               xc, yc, rc)
+                    last_z = vertical_z(args.speed * args.min_speed, +1)
+                    send_frame(master, last_z, xc, yc, rc)
                     time.sleep(period)
                     continue
                 break
 
             error = target_m - depth        # +ve → need to go deeper
             mag = abs(error)
-            effort = args.speed * max(args.min_speed,
-                                      min(args.max_speed, args.kp * mag))
+            raw_effort = args.speed * max(args.min_speed,
+                                          min(args.max_speed, args.kp * mag))
 
             if mag <= args.deadband:
                 z = NEUTRAL_Z               # ALT_HOLD locks current depth
+                move_dir = 0
+                ramp_t0 = None
                 if reached_at is None and mag <= args.settle_tol:
                     reached_at = time.monotonic()
                     print(f'✓ Reached {depth:.2f} m — holding '
                           f'{args.hold_duration:.0f}s via ALT_HOLD.')
-            elif error > 0:
-                z = vertical_z(effort, -1)            # descend
             else:
-                z = vertical_z(effort, +1)            # ascend
+                direction = -1 if error > 0 else +1     # descend / ascend
+                if direction != move_dir:
+                    move_dir = direction
+                    ramp_t0 = time.monotonic()
+                ramp_frac = clamp(
+                    (time.monotonic() - ramp_t0) / RAMP_SECONDS, 0.0, 1.0)
+                floor = args.speed * args.min_speed
+                effort = floor + (raw_effort - floor) * ramp_frac
+                z = vertical_z(effort, direction)
 
             send_frame(master, z, xc, yc, rc)
+            last_z = z
 
             if loops % RATE_HZ == 0:        # ~1 Hz telemetry
                 state = ('HOLD' if mag <= args.deadband
@@ -811,8 +1054,14 @@ def main():
                 yaw_str = (f' yaw pix={_dyaw(pix_yaw, pix_yaw0)}'
                            f' zed={_dyaw(zed_yaw, zed_yaw0)}')
                 print(f'[{state}] depth={depth:.2f} m '
-                      f'target={target_m:.2f} m err={error:+.2f} m z={z}'
-                      f'{sk_str}{yaw_str}')
+                      f'target={target_m:.2f} m err={error:+.2f} m z={z} '
+                      f'{pwm_mon.fmt()}{sk_str}{yaw_str}')
+
+            if (args.run_seconds > 0
+                    and time.monotonic() - run_t0 >= args.run_seconds):
+                print(f'Run-time cap {args.run_seconds:.1f}s reached — '
+                      f'surfacing.')
+                break
 
             if (reached_at is not None
                     and time.monotonic() - reached_at >= args.hold_duration):
@@ -824,16 +1073,21 @@ def main():
         print('Surfacing…')
         deadline = time.time() + 30.0
         while time.time() < deadline:
-            d, _ = drain_depth(master, surface_hpa, rho, ptype)
+            loops += 1
+            d, _, pwm = drain_depth(master, surface_hpa, rho, ptype)
             if d is not None:
                 depth = d
+            if pwm is not None:
+                pwm_mon.update(pwm, last_z)
             xc, yc = sk.compute() if sk is not None else (0, 0)
             rc = sk.compute_yaw() if sk is not None else 0
             if depth <= args.deadband:
                 break
-            send_frame(master,
-                       vertical_z(args.speed * args.max_speed, +1),
-                       xc, yc, rc)
+            last_z = vertical_z(args.speed * args.max_speed, +1)
+            send_frame(master, last_z, xc, yc, rc)
+            if loops % RATE_HZ == 0:
+                print(f'[SURFACE] depth={depth:.2f} m z={last_z} '
+                      f'{pwm_mon.fmt()}')
             time.sleep(period)
     except KeyboardInterrupt:
         print('\nInterrupted — stopping.')
