@@ -22,13 +22,37 @@ Control law lives in control.heading_lock (pure, unit-tested); this file is
 wiring only: staleness detection (node-clock arrival age, immune to source
 clock skew), live-tunable params, debug topics.
 
+Params (all live-tunable via `ros2 param set` except rate_hz/yaw_topic, which
+require a restart and are rejected by the validation callback):
+  - kp, ki, kd, i_limit         PID gains (>= 0, finite)
+  - max_yaw_authority           correction clamp, 0 < x <= 1
+  - max_forward_speed           surge clamp, 0 < x <= 1
+  - stale_timeout_s             per-sample staleness age, > 0
+  - grace_s                     continuous-stale abort timer, > 0
+  - stale_window_s              sliding window for the stale DUTY CYCLE
+                                 abort below, > 0 (default 3.0)
+  - stale_duty_abort            abort if the fraction of stale ticks over
+                                 stale_window_s exceeds this, 0 < x <= 1
+                                 (default 0.5)
+  - rate_hz, yaw_topic           restart-only (rejected if set live)
+
 Safety: yaw stale > stale_timeout_s -> correction zeroed; still stale after
 grace_s -> stop + unlock (blind forward is how the veer-right symptom hits
 walls). Any tick exception -> stop + unlock. heave stays 0 so ALT_HOLD keeps
 owning depth.
+
+Degraded-source safety (stale DUTY CYCLE): a source that never goes fully
+dead but keeps dropping under stale_timeout_s (e.g. a ZED brownout arriving
+every 0.5-1.0s) never trips the grace_s abort above — each fresh sample
+resets the continuous-stale clock, so the node would otherwise drive blind
+forever with yaw_rate pinned near 0. This node tracks the fraction of stale
+ticks over the trailing stale_window_s and aborts (stop + unlock) once that
+fraction exceeds stale_duty_abort, independent of heading_lock.py's own
+grace_s path (which still fires faster for a fully-dead source).
 """
 import math
 import time
+from collections import deque
 
 import rclpy
 from rclpy.node import Node
@@ -43,6 +67,20 @@ from control.pid import PID
 DEBUG_TOPICS = ('current_yaw', 'target_yaw', 'error', 'pid_output',
                 'motor1', 'motor2', 'motor3', 'motor4')
 
+# Declared defaults, kept in one place so both __init__ and the
+# on-set-parameters validator use the SAME fallback (never a bare 0.0 —
+# a None/invalid value silently coerced to 0.0 would e.g. disable kp).
+PARAM_DEFAULTS = {
+    'kp': 1.2, 'ki': 0.0, 'kd': 0.3, 'i_limit': 0.3,
+    'max_yaw_authority': 0.4, 'max_forward_speed': 0.6,
+    'stale_timeout_s': 0.5, 'grace_s': 1.0,
+    'stale_window_s': 3.0, 'stale_duty_abort': 0.5,
+    'rate_hz': 20.0, 'yaw_topic': 'imu/rpy',
+}
+
+# Params that require a node restart to take effect; rejected if set live.
+RESTART_ONLY_PARAMS = ('rate_hz', 'yaw_topic')
+
 
 def _pf(value, default):
     """Total float coercion for ROS param reads (matches autonomous_controller)."""
@@ -50,6 +88,43 @@ def _pf(value, default):
         return float(value) if value is not None else float(default)
     except (TypeError, ValueError):
         return float(default)
+
+
+def _validate_param(name, value):
+    """Return None if `value` is acceptable for param `name`, else a
+    human-readable rejection reason. Validates the WHOLE incoming batch
+    before anything is applied — see _on_params."""
+    if name in RESTART_ONLY_PARAMS:
+        return 'requires node restart'
+
+    if name in ('kp', 'ki', 'kd', 'i_limit'):
+        try:
+            v = float(value)
+        except (TypeError, ValueError):
+            return f'{name} must be a finite number (got {value!r})'
+        if not math.isfinite(v) or v < 0.0:
+            return f'{name} must be finite and >= 0 (got {value!r})'
+        return None
+
+    if name in ('max_yaw_authority', 'max_forward_speed', 'stale_duty_abort'):
+        try:
+            v = float(value)
+        except (TypeError, ValueError):
+            return f'{name} must be a finite number (got {value!r})'
+        if not (math.isfinite(v) and 0.0 < v <= 1.0):
+            return f'{name} must satisfy 0 < {name} <= 1 (got {value!r})'
+        return None
+
+    if name in ('stale_timeout_s', 'grace_s', 'stale_window_s'):
+        try:
+            v = float(value)
+        except (TypeError, ValueError):
+            return f'{name} must be a finite number (got {value!r})'
+        if not (math.isfinite(v) and v > 0.0):
+            return f'{name} must be > 0 (got {value!r})'
+        return None
+
+    return None  # unknown/undeclared param names: nothing to validate here
 
 
 class HeadingLockNode(Node):
@@ -63,6 +138,8 @@ class HeadingLockNode(Node):
         self.declare_parameter('max_forward_speed', 0.6)
         self.declare_parameter('stale_timeout_s', 0.5)
         self.declare_parameter('grace_s', 1.0)
+        self.declare_parameter('stale_window_s', 3.0)
+        self.declare_parameter('stale_duty_abort', 0.5)
         self.declare_parameter('rate_hz', 20.0)
         self.declare_parameter('yaw_topic', 'imu/rpy')
 
@@ -77,10 +154,14 @@ class HeadingLockNode(Node):
             grace_s=p('grace_s', 1.0))
         self._stale_timeout_s = p('stale_timeout_s', 0.5)
         self._max_forward_speed = p('max_forward_speed', 0.6)
+        self._stale_window_s = p('stale_window_s', 3.0)
+        self._stale_duty_abort = p('stale_duty_abort', 0.5)
 
         self._last_yaw = None          # (arrival_monotonic_s, yaw_rad)
         self._last_tick = time.monotonic()
         self._warned_stale = False
+        self._stale_samples = deque()  # (tick_monotonic_s, was_stale bool)
+        self._stale_window_started_at = None  # anchor for "window is full"
 
         self.add_on_set_parameters_callback(self._on_params)
 
@@ -128,7 +209,8 @@ class HeadingLockNode(Node):
         if self._lock.state in (LockState.LOCKED, LockState.STALE_GRACE):
             self._lock.set_base_speed(speed)     # speed change, target kept
             return
-        yaw = self._fresh_yaw(time.monotonic())
+        now = time.monotonic()
+        yaw = self._fresh_yaw(now)
         if yaw is None:
             self.get_logger().error(
                 'cmd refused — no fresh yaw to lock '
@@ -137,11 +219,43 @@ class HeadingLockNode(Node):
             return
         self._lock.start(yaw, speed)
         self._warned_stale = False
+        self._stale_samples.clear()
+        self._stale_window_started_at = now
         self.get_logger().info(
             f'heading LOCKED at {math.degrees(self._lock.target_yaw):+.1f}° '
             f'— forward {speed:.2f}')
 
     # ─── control tick ───────────────────────────────────────────────
+
+    def _record_stale_sample(self, now, was_stale):
+        """Append (now, was_stale) and evict entries older than
+        stale_window_s. Called every tick while not IDLE."""
+        self._stale_samples.append((now, was_stale))
+        cutoff = now - self._stale_window_s
+        while self._stale_samples and self._stale_samples[0][0] < cutoff:
+            self._stale_samples.popleft()
+
+    def _stale_duty_fraction(self, now):
+        """Fraction of stale ticks in the trailing stale_window_s, or None
+        if the window hasn't accumulated a full stale_window_s of history
+        yet (avoids aborting on a partially-filled window right after
+        lock).
+
+        "Full" is measured against _stale_window_started_at (set at lock
+        time), NOT against the deque's own span — the sliding eviction in
+        _record_stale_sample always keeps the oldest sample's age just
+        under stale_window_s by construction, so comparing span against
+        the same threshold would never be true and the check would never
+        fire.
+        """
+        if self._stale_window_started_at is None:
+            return None
+        if now - self._stale_window_started_at < self._stale_window_s:
+            return None
+        if not self._stale_samples:
+            return None
+        stale_count = sum(1 for _, s in self._stale_samples if s)
+        return stale_count / len(self._stale_samples)
 
     def _tick(self):
         now = time.monotonic()
@@ -151,6 +265,17 @@ class HeadingLockNode(Node):
             return
         try:
             yaw = self._fresh_yaw(now)
+            self._record_stale_sample(now, yaw is None)
+            duty_fraction = self._stale_duty_fraction(now)
+            if duty_fraction is not None and duty_fraction > self._stale_duty_abort:
+                self.get_logger().error(
+                    f'yaw stale {duty_fraction:.0%} of last '
+                    f'{self._stale_window_s:.1f}s (> {self._stale_duty_abort:.0%} '
+                    'duty-cycle threshold) — STOP + unlock')
+                self._lock.stop()
+                self._publish_stop()
+                return
+
             surge, yaw_rate, state = self._lock.update(yaw, now, dt)
 
             if state is LockState.ABORTED:
@@ -192,7 +317,7 @@ class HeadingLockNode(Node):
         values = {
             'current_yaw': yaw if yaw is not None else float('nan'),
             'target_yaw': self._lock.target_yaw,
-            'error': self._lock.last_error,
+            'error': self._lock.last_error if yaw is not None else float('nan'),
             'pid_output': yaw_rate,
             'motor1': right, 'motor2': left,
             'motor3': right, 'motor4': left,
@@ -203,21 +328,39 @@ class HeadingLockNode(Node):
     # ─── live tuning ────────────────────────────────────────────────
 
     def _on_params(self, params):
+        """Validate the WHOLE incoming batch first; on the first violation
+        reject the batch and apply NOTHING (partial application would leave
+        e.g. a validated kp alongside a rejected, unchanged max_yaw_authority
+        — silently inconsistent). Only once every param passes do we apply
+        any of them. rate_hz/yaw_topic are always rejected: they only take
+        effect at construction time, so accepting them live would silently
+        lie about having applied the change.
+        """
+        for prm in params:
+            reason = _validate_param(prm.name, prm.value)
+            if reason is not None:
+                return SetParametersResult(successful=False, reason=reason)
+
         for prm in params:
             name, val = prm.name, prm.value
+            default = PARAM_DEFAULTS.get(name, 0.0)
             if name in ('kp', 'ki', 'kd'):
-                self._pid.set_gains(**{name: _pf(val, 0.0)})
+                self._pid.set_gains(**{name: _pf(val, default)})
             elif name == 'i_limit':
-                self._pid.set_gains(i_limit=_pf(val, 0.3))
+                self._pid.set_gains(i_limit=_pf(val, default))
             elif name == 'max_yaw_authority':
-                self._lock.max_yaw_authority = _pf(val, 0.4)
+                self._lock.max_yaw_authority = _pf(val, default)
             elif name == 'grace_s':
-                self._lock.grace_s = _pf(val, 1.0)
+                self._lock.grace_s = _pf(val, default)
             elif name == 'stale_timeout_s':
-                self._stale_timeout_s = _pf(val, 0.5)
+                self._stale_timeout_s = _pf(val, default)
             elif name == 'max_forward_speed':
-                self._max_forward_speed = _pf(val, 0.6)
-            # rate_hz / yaw_topic changes need a restart; accepted silently
+                self._max_forward_speed = _pf(val, default)
+            elif name == 'stale_window_s':
+                self._stale_window_s = _pf(val, default)
+            elif name == 'stale_duty_abort':
+                self._stale_duty_abort = _pf(val, default)
+            # rate_hz / yaw_topic are rejected above, never reached here.
         return SetParametersResult(successful=True)
 
     def destroy_node(self):
