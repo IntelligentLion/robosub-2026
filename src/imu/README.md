@@ -26,8 +26,8 @@ arrows; the diagnostics block prints in the terminal at 10 Hz.
 ### Options
 
 ```bash
-# select one of two ZED 2i cameras by serial
-ros2 launch imu imu_viz.launch.py serial_number:=<serial>
+# serial is hardcoded to the FRONT-facing zed2i (31166146).
+# NEVER use 30758628 — that is the bottom-facing camera.
 
 # attach to an already-running ZED (skip pre-kill + camera bringup)
 ros2 launch imu imu_viz.launch.py start_zed:=false
