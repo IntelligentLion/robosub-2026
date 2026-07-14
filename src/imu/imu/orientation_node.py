@@ -48,6 +48,13 @@ class OrientationNode(Node):
         self.declare_parameter('map_frame', 'map')
         self.declare_parameter('calib_samples', 100)
         self.declare_parameter('mount_rpy', [0.0, 0.0, 0.0])
+        # Set false when another node owns the vehicle pose (e.g.
+        # control/rviz_visualizer, which publishes odom→base_link WITH a
+        # translation). Two broadcasters on one TF edge fight, and RViz shows
+        # whichever arrived last — so exactly one node may own that edge.
+        # Default true keeps imu_viz.launch.py / pix_imu_viz.launch.py working
+        # as they always have, where this node IS the only pose source.
+        self.declare_parameter('publish_tf', True)
 
         self._imu_topic = self.get_parameter('imu_topic').value
         self._parent = self.get_parameter('parent_frame').value
@@ -56,6 +63,7 @@ class OrientationNode(Node):
         self._map = self.get_parameter('map_frame').value
         self._calib_n = int(self.get_parameter('calib_samples').value)
         self._mount_rpy = list(self.get_parameter('mount_rpy').value)
+        self._publish_tf = bool(self.get_parameter('publish_tf').value)
 
         self._q_ref = None            # reference quaternion (None until calibrated)
         self._calib_buf = []          # samples collected during calibration
@@ -78,12 +86,9 @@ class OrientationNode(Node):
     # ---- static transforms (map->odom identity, base_link->imu_link mount) ----
     def _publish_static_tf(self):
         now = self.get_clock().now().to_msg()
-        m2o = TransformStamped()
-        m2o.header.stamp = now
-        m2o.header.frame_id = self._map
-        m2o.child_frame_id = self._parent
-        m2o.transform.rotation.w = 1.0
 
+        # base_link->imu_link is the sensor MOUNT: it is ours regardless of who
+        # owns the vehicle pose, so it is published either way.
         b2i = TransformStamped()
         b2i.header.stamp = now
         b2i.header.frame_id = self._child
@@ -93,7 +98,19 @@ class OrientationNode(Node):
         b2i.transform.rotation.y = qy
         b2i.transform.rotation.z = qz
         b2i.transform.rotation.w = qw
-        self._static_tf.sendTransform([m2o, b2i])
+
+        transforms = [b2i]
+        if self._publish_tf:
+            # map->odom identity. Skipped when another node owns the pose — it
+            # publishes this edge itself, and two broadcasters would fight.
+            m2o = TransformStamped()
+            m2o.header.stamp = now
+            m2o.header.frame_id = self._map
+            m2o.child_frame_id = self._parent
+            m2o.transform.rotation.w = 1.0
+            transforms.append(m2o)
+
+        self._static_tf.sendTransform(transforms)
 
     def _reset_cb(self, request, response):
         self._q_ref = None
@@ -131,6 +148,8 @@ class OrientationNode(Node):
         self._rpy_pub.publish(rpy)
 
     def _broadcast(self, q, stamp):
+        if not self._publish_tf:
+            return          # another node owns odom→base_link; imu/rpy still flows
         t = TransformStamped()
         t.header.stamp = stamp
         t.header.frame_id = self._parent
