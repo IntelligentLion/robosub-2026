@@ -62,7 +62,7 @@ SERIAL_PORT = '/dev/ttyACM0'
 BAUD_RATE = 115200
 
 ARM_SETTLE_TIME = 3       # seconds to wait after arming before driving
-FLIGHT_MODE = 'STABILIZE'  # autopilot holds depth between/after the submerge
+FLIGHT_MODE = 'ALT_HOLD'  # autopilot holds depth between/after the submerge
 CONFIRM = True            # ask "go" before arming; set False to run immediately
 
 # ── Per-leg raw thrust + time. Edit freely; each leg is independent. ────────
@@ -73,7 +73,7 @@ SUBMERGE_Z       = 150
 SUBMERGE_TIME    = 3
 
 # 2) forward 11 ft        (+x forward)
-FWD1_THRUST      = 1000
+FWD1_THRUST      = 500
 FWD1_TIME        = 10
 
 # 3) strafe right 4 ft    (+y right)
@@ -125,13 +125,13 @@ ZED_STALE_S = 1.0        # treat the ZED fix as lost after this long
 # Course: (label, x, y, z, r, seconds, is_turn). z=None → hold NEUTRAL_Z.
 COURSE = [
     ('1. submerge 5 ft',     0,                0,                 SUBMERGE_Z, 0,           SUBMERGE_TIME,  False),
-    ('6. turn 180°',         0,                0,                 400,       TURN_THRUST, 4.5,      True),
-    ('2. forward 11 ft',     FWD1_THRUST,      0,                250,       0,           FWD1_TIME,      False),
+    #('6. turn 180°',         0,                0,                 400,       TURN_THRUST, 4.5,      True),
+    ('2. forward 11 ft',     FWD1_THRUST,      0,                150,       0,           FWD1_TIME,      False),
     #('3. strafe right 4 ft', 0,                STRAFE_R_THRUST,   SUBMERGE_Z,       0,           STRAFE_R_TIME,  False),
  #   ('4. forward 4 ft',      FWD2_THRUST,      0,                 170,       0,           FWD2_TIME,      False),
   #  ('5. strafe left 7 ft',  0,                -STRAFE_L1_THRUST, SUBMERGE_Z,       0,           STRAFE_L1_TIME, False)
-    ('6. turn 180°',         0,                0,                 400,       TURN_THRUST, 4.5,      True),
-    ('6. turn 180°',         0,                0,                 400,       TURN_THRUST, 4.5,      True),
+    #('6. turn 180°',         0,                0,                 400,       TURN_THRUST, 4.5,      True),
+    #('6. turn 180°',         0,                0,                 400,       TURN_THRUST, 4.5,      True),
     ('2. forward 11 ft',     FWD1_THRUST,      0,                300,       0,           FWD1_TIME,      False)
    # ('7. forward 5 ft',      FWD3_THRUST,      0,                 190,       0,           FWD3_TIME,      False),
    # ('8. strafe left 4 ft',  0,                -STRAFE_L2_THRUST, 190,       0,           STRAFE_L2_TIME, False),

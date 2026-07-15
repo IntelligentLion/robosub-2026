@@ -45,7 +45,7 @@ Two modes:
 SAFETY (live): bounded iterations, gain clamps, and a runaway guard that aborts
 + restores the starting gains if a response blows up (huge overshoot /
 non-finite / never settles). WATCH every live iteration; kill on runaway. This
-slews the vehicle repeatedly — treat it like any wet motor test.
+slews the vehicle repeatedly — treat it like any wet motor test.    
 
 Usage:
     # safe: offline, no hardware — see the tuner work, get starting gains
@@ -71,6 +71,8 @@ import math
 import os
 import sys
 import time
+from control.api import Auv, SubmergeError
+
 
 # ── Node + parameter identity (the new API) ─────────────────────────────────
 MOTION_NODE = 'motion_node'
@@ -595,6 +597,8 @@ def main():
         return m
 
     try:
+        with Auv() as auv:
+            auv.submerge_to_depth(target_depth=1)   # blocks until 'hold'
         # Pattern search (Hooke-Jeeves): evaluate the current best, probe ± a
         # step on each gain, move to the first probe that lowers the score. When
         # no probe improves, shrink every step. Only accepted (better) points
@@ -638,7 +642,7 @@ def main():
         bg = best[1]
         print('BEST: kp=%.3f ki=%.3f kd=%.3f  (score=%.1f)'
               % (bg[0], bg[1], bg[2], best[0]))
-        print('      %s' % fmt_metrics(best[2]))
+        print('      %ds' % fmt_metrics(best[2]))
         if live:
             print('Applying best gains to /%s now.' % args.node)
             live_apply_gains(args.node, bg)
@@ -657,6 +661,8 @@ def main():
     finally:
         if tester is not None:
             tester.close()
+            auv.submerge_to_depth(target_depth=0)
+            auv.stop()
             try:
                 import rclpy
                 if rclpy.ok():

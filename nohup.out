@@ -1,0 +1,54 @@
+Traceback (most recent call last):
+  File "/home/robosub/robosub2026/robosub-2026/auto_tune_pid.py", line 673, in <module>
+    sys.exit(main())
+  File "/home/robosub/robosub2026/robosub-2026/auto_tune_pid.py", line 528, in main
+    cur = {name: _ros2_param_get(args.node, name)
+  File "/home/robosub/robosub2026/robosub-2026/auto_tune_pid.py", line 528, in <dictcomp>
+    cur = {name: _ros2_param_get(args.node, name)
+  File "/home/robosub/robosub2026/robosub-2026/auto_tune_pid.py", line 326, in _ros2_param_get
+    proc = subprocess.run(
+  File "/usr/lib/python3.10/subprocess.py", line 505, in run
+    stdout, stderr = process.communicate(input, timeout=timeout)
+  File "/usr/lib/python3.10/subprocess.py", line 1154, in communicate
+    stdout, stderr = self._communicate(input, endtime, timeout)
+  File "/usr/lib/python3.10/subprocess.py", line 2021, in _communicate
+    ready = selector.select(timeout)
+  File "/usr/lib/python3.10/selectors.py", line 416, in select
+    fd_event_list = self._selector.poll(timeout)
+KeyboardInterrupt
+
+auto-tune HEADING PID  mode=sim  budget=12 evals  target: overshoot<=10% settle<=4.0s |ss|<=0.030
+start gains: kp=1.200 ki=0.000 kd=0.300  (i_limit=0.300, yaw clamp ±0.40)
+------------------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/robosub/robosub2026/robosub-2026/auto_tune_pid.py", line 675, in <module>
+    sys.exit(main())
+  File "/home/robosub/robosub2026/robosub-2026/auto_tune_pid.py", line 601, in main
+    auv.submerge_to_depth(target_depth=1)   # blocks until 'hold'
+  File "/home/robosub/robosub2026/robosub-2026/build/control/control/api.py", line 115, in submerge_to_depth
+    self._await_subscriber(self._submerge_pub, timeout=5.0)
+  File "/home/robosub/robosub2026/robosub-2026/build/control/control/api.py", line 134, in _await_subscriber
+    self._spin(0.05)
+  File "/home/robosub/robosub2026/robosub-2026/build/control/control/api.py", line 74, in _spin
+    rclpy.spin_once(self._node, timeout_sec=self._spin_period)
+  File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/__init__.py", line 208, in spin_once
+    executor.spin_once(timeout_sec=timeout_sec)
+  File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/executors.py", line 808, in spin_once
+    self._spin_once_impl(timeout_sec)
+  File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/executors.py", line 797, in _spin_once_impl
+    handler, entity, node = self.wait_for_ready_callbacks(timeout_sec=timeout_sec)
+  File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/executors.py", line 780, in wait_for_ready_callbacks
+    return next(self._cb_iter)
+  File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/executors.py", line 677, in _wait_for_ready_callbacks
+    wait_set.wait(timeout_nsec)
+KeyboardInterrupt
+done with submerge
+turn right 90 degrees done
+turn left 90 degrees done
+resurfaced!
+done with missino you black nigger faggot!
+done with submerge
+turn right 90 degrees done
+turn left 90 degrees done
+resurfaced!
+done with missino you black nigger faggot!

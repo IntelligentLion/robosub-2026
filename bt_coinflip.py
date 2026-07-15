@@ -204,7 +204,7 @@ def main():
     ap = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('--depth-ft', type=float, default=3.0,
+    ap.add_argument('--depth-ft', type=float, default=1,
                     help='submerge target (feet)')
     ap.add_argument('--labels', type=lambda s: [x.strip() for x in s.split(',')
                                                  if x.strip()],
