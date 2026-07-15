@@ -79,3 +79,11 @@ tmpclaude-*
 # Logs
 *.log
 logs/
+Task1_SurveyRepair*.svg
+
+# archived logs (colcon build logs, old app-run logs, stale tuning csvs)
+log_archive/
+autotune_logs/
+
+# rosbag data captures (binary, not source)
+rosbag2_*/

@@ -1,11 +1,10 @@
 // SHRUB v4 — Shared ROS I/O layer implementation. See mission_io.hpp.
-//
-// NOT YET COMPILED IN THIS WORKSPACE — verify with
-//   colcon build --packages-select bt_mission
 #include <bt_mission/mission_io.hpp>
 
+#include <chrono>
 #include <cmath>
 #include <stdexcept>
+#include <thread>
 
 namespace shrub {
 
@@ -33,6 +32,7 @@ MissionIO::MissionIO(rclcpp::Node::SharedPtr node)
     : node_(node), dets_stamp_(node->now()) {
   move_pub_ = node_->create_publisher<auv_msgs::msg::MovementCommand>("movement_command", 10);
   nav_pub_  = node_->create_publisher<auv_msgs::msg::NavigationCommand>("navigation_command", 10);
+  dropper_pub_ = node_->create_publisher<std_msgs::msg::String>("dropper_command", 10);
 
   det_sub_ = node_->create_subscription<auv_msgs::msg::ObjectDetectionArray>(
       "vision/detections", 10,
@@ -49,6 +49,7 @@ MissionIO::MissionIO(rclcpp::Node::SharedPtr node)
   leak_sub_ = node_->create_subscription<std_msgs::msg::Bool>(
       "/safety/leak_detected", 10,
       std::bind(&MissionIO::onLeak, this, std::placeholders::_1));
+  disarm_client_ = node_->create_client<std_srvs::srv::Trigger>("pixhawk/disarm");
 
   RCLCPP_INFO(node_->get_logger(),
               "MissionIO ready — publishing movement_command / navigation_command, "
@@ -82,6 +83,49 @@ void MissionIO::sendNav(const std::string& mode, const std::string& target_label
 }
 
 void MissionIO::stop() { sendMovement("stop"); }
+
+void MissionIO::dropperCommand(const std::string& cmd) {
+  std_msgs::msg::String msg;
+  msg.data = cmd;
+  dropper_pub_->publish(msg);
+}
+
+void MissionIO::disarm() {
+  stop();
+  if (!disarm_client_->service_is_ready()) {
+    RCLCPP_ERROR(node_->get_logger(),
+                 "disarm(): pixhawk/disarm service not available — "
+                 "vehicle stays armed, thruster_node's own 60s watchdog "
+                 "disarm is the only remaining backstop");
+    return;
+  }
+  auto req = std::make_shared<std_srvs::srv::Trigger::Request>();
+  disarm_client_->async_send_request(
+      req, [this](rclcpp::Client<std_srvs::srv::Trigger>::SharedFuture fut) {
+        auto res = fut.get();
+        RCLCPP_INFO(node_->get_logger(), "disarm(): %s (%s)",
+                    res->success ? "ok" : "FAILED", res->message.c_str());
+      });
+}
+
+void MissionIO::surfaceAndDisarm(double emerge_speed, double emerge_s) {
+  RCLCPP_WARN(node_->get_logger(),
+              "surfaceAndDisarm(): emerging for %.1fs then disarming",
+              emerge_s);
+  sendMovement("emerge", emerge_speed, emerge_s);
+  auto deadline = node_->now() + rclcpp::Duration::from_seconds(emerge_s);
+  while (rclcpp::ok() && node_->now() < deadline) {
+    rclcpp::spin_some(node_);
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+  disarm();
+  // Let the async disarm response land before the process exits.
+  auto ack_deadline = node_->now() + rclcpp::Duration::from_seconds(1.0);
+  while (rclcpp::ok() && node_->now() < ack_deadline) {
+    rclcpp::spin_some(node_);
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+}
 
 // ─── Sensor callbacks ────────────────────────────────────────────
 void MissionIO::onDetections(const auv_msgs::msg::ObjectDetectionArray::SharedPtr msg) {

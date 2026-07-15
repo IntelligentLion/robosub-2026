@@ -18,7 +18,8 @@ Features
   flight controller so the thrusters stay active.
 * **1 Hz heartbeat** – keeps ArduSub GCS failsafe from disarming.
 * **Watchdog** – auto-stops if no new commands arrive within a configurable
-  timeout (default 30 s).
+  timeout (default 4 s), and disarms if the drought continues past a second,
+  longer timeout (default 60 s).
 * **Auto-reconnect** – re-establishes MAVLink link and re-arms on serial
   errors or unexpected disarms.
 """
@@ -86,7 +87,8 @@ class ThrusterController(Node):
     MAX_RECONNECT_ATTEMPTS = 5      # give up after this many consecutive reconnects
     HEARTBEAT_INTERVAL_S = 1.0      # send heartbeat every 1 s
     ARMED_CHECK_INTERVAL_S = 5.0    # verify armed status every 5 s
-    DEFAULT_WATCHDOG_S = 30.0       # stop if no command received for this long
+    DEFAULT_WATCHDOG_S = 4.0        # stop if no command received for this long
+    DEFAULT_DISARM_WATCHDOG_S = 60.0  # disarm if the drought continues this long
 
     # ── Gateway ─────────────────────────────────────────────────────────
     TELEMETRY_RATE_HZ = 10.0        # imu/depth/mode republish rate
@@ -94,6 +96,16 @@ class ThrusterController(Node):
     HEARTBEAT_STALE_S = 3.0         # no HEARTBEAT for this long → mode unknown
     MODE_ACK_TIMEOUT_S = 3.0        # wait this long for a custom_mode readback
     PARAM_READ_TIMEOUT_S = 3.0
+
+    # ── Dropper (marker release servo, AUX1/SERVO9) — see dropper.py for the
+    # standalone driver and hardware notes. Reimplemented here (send-only +
+    # passive master.messages verify) rather than importing Dropper directly:
+    # Dropper._recv() calls master.recv_match() itself, which would violate
+    # the single-serial-reader rule against the background reader thread. ──
+    DROPPER_CHANNEL = 9
+    DROPPER_DROP_RIGHT_PWM = 1000
+    DROPPER_DROP_LEFT_PWM = 1900
+    DROPPER_REST_PWM = 1500
 
     # ── ArduSub flight modes (custom_mode IDs) ──────────────────────────
     # ALT_HOLD is the default: the autopilot holds depth on the pressure
@@ -112,6 +124,8 @@ class ThrusterController(Node):
         self.declare_parameter('baud_rate', 115200)
         self.declare_parameter('simulate', False)
         self.declare_parameter('watchdog_timeout', self.DEFAULT_WATCHDOG_S)
+        self.declare_parameter('disarm_watchdog_timeout',
+                                self.DEFAULT_DISARM_WATCHDOG_S)
         self.declare_parameter('flight_mode', self.DEFAULT_FLIGHT_MODE)
         self.declare_parameter('water_density', 1000.0)
 
@@ -157,6 +171,14 @@ class ThrusterController(Node):
         except (TypeError, ValueError):
             self.watchdog_timeout = self.DEFAULT_WATCHDOG_S
 
+        dwd = self.get_parameter('disarm_watchdog_timeout').value
+        try:
+            self.disarm_watchdog_timeout = (
+                float(dwd) if isinstance(dwd, (int, float))
+                else self.DEFAULT_DISARM_WATCHDOG_S)
+        except (TypeError, ValueError):
+            self.disarm_watchdog_timeout = self.DEFAULT_DISARM_WATCHDOG_S
+
         # Explicit kwarg overrides the ROS param (which defaults to ALT_HOLD).
         mode_name = (flight_mode
                      or self.get_parameter('flight_mode').value
@@ -201,6 +223,7 @@ class ThrusterController(Node):
         self._stop_time = None          # auto-stop deadline
         self._last_cmd_time = None      # watchdog: last command timestamp
         self._watchdog_triggered = False
+        self._watchdog_disarmed = False
         self._loop_count = 0            # for periodic debug logging
         self._mode_revert_count = 0     # consecutive flight-mode rejections
         self._last_log_key = None       # de-dupe repeated Movement log lines
@@ -208,6 +231,8 @@ class ThrusterController(Node):
         # ── ROS subscriptions & timers ──────────────────────────────────
         self.create_subscription(
             MovementCommand, 'movement_command', self._movement_cb, 10)
+        self.create_subscription(
+            String, 'dropper_command', self._dropper_cb, 10)
 
         self._imu_pub = self.create_publisher(Imu, 'pixhawk/imu/data', 10)
         self._depth_pub = self.create_publisher(Float32, 'pixhawk/depth', 10)
@@ -224,6 +249,9 @@ class ThrusterController(Node):
             callback_group=self._svc_group)
         self.create_service(
             Trigger, 'pixhawk/preflight', self._on_preflight,
+            callback_group=self._svc_group)
+        self.create_service(
+            Trigger, 'pixhawk/disarm', self._on_disarm,
             callback_group=self._svc_group)
 
         self.create_timer(0.1, self._control_loop)                # 10 Hz
@@ -339,6 +367,19 @@ class ThrusterController(Node):
             self.get_logger().info('Disarm command sent')
         except Exception:
             pass
+
+    def _on_disarm(self, request, response):
+        """ROS-callable disarm — the mission stack's only way to disarm
+        outside of node shutdown (F11: nothing could disarm at mission end)."""
+        self.stop()
+        if self.simulate:
+            response.success = True
+            response.message = 'SIMULATION — no vehicle to disarm'
+            return response
+        self._disarm_vehicle()
+        response.success = True
+        response.message = 'Disarm command sent'
+        return response
 
     def set_flight_mode(self, mode_name):
         """Switch ArduSub flight mode at runtime.
@@ -720,6 +761,70 @@ class ThrusterController(Node):
             _time.sleep(0.02)
         return None
 
+    def _set_dropper_servo(self, pwm, retries=3):
+        """DO_SET_SERVO on the dropper channel + passive verify via the
+        reader thread's master.messages cache (F17/F14: moved off the
+        recv_match-based standalone Dropper driver, into the single MAVLink
+        owner). True on success."""
+        if self.simulate or self.master is None:
+            return True
+        for _ in range(retries):
+            self.master.messages.pop('SERVO_OUTPUT_RAW', None)
+            with self._tx_lock:
+                self.master.mav.command_long_send(
+                    self.master.target_system, self.master.target_component,
+                    mavutil.mavlink.MAV_CMD_DO_SET_SERVO,
+                    0, self.DROPPER_CHANNEL, pwm, 0, 0, 0, 0, 0)
+            deadline = _time.monotonic() + 1.0
+            while _time.monotonic() < deadline:
+                msg = self.master.messages.get('SERVO_OUTPUT_RAW')
+                if msg is not None:
+                    raw = getattr(
+                        msg, f'servo{self.DROPPER_CHANNEL}_raw', None)
+                    if raw == pwm:
+                        return True
+                _time.sleep(0.02)
+        self.get_logger().warn(
+            f'Dropper: servo{self.DROPPER_CHANNEL} did not reach {pwm}us')
+        return False
+
+    def _dropper_prepare(self):
+        """SERVO9_FUNCTION reverts to 184 (Actuator1) every FC boot; force it
+        back to 0 (Disabled, RC-passthrough-free) so DO_SET_SERVO drives it.
+        This is the one deliberate per-mission param write in this node —
+        see dropper.py's module docstring; unlike the motor-mixer params,
+        this one is meant to be rewritten every run."""
+        if self.simulate or self.master is None:
+            return True
+        name = f'SERVO{self.DROPPER_CHANNEL}_FUNCTION'
+        cur = self._read_param(name)
+        if cur is not None and cur == 0:
+            return self._set_dropper_servo(self.DROPPER_REST_PWM)
+        with self._tx_lock:
+            self.master.mav.param_set_send(
+                self.master.target_system, self.master.target_component,
+                name.encode('ascii'), 0,
+                mavutil.mavlink.MAV_PARAM_TYPE_REAL32)
+        _time.sleep(0.5)
+        chk = self._read_param(name)
+        if chk != 0:
+            self.get_logger().warn(f'Dropper: {name} stuck at {chk}')
+            return False
+        return self._set_dropper_servo(self.DROPPER_REST_PWM)
+
+    def _dropper_cb(self, msg: String):
+        cmd = msg.data.strip().lower()
+        if cmd == 'prepare':
+            self._dropper_prepare()
+        elif cmd == 'drop_right':
+            self._set_dropper_servo(self.DROPPER_DROP_RIGHT_PWM)
+        elif cmd == 'drop_left':
+            self._set_dropper_servo(self.DROPPER_DROP_LEFT_PWM)
+        elif cmd == 'reset':
+            self._set_dropper_servo(self.DROPPER_REST_PWM)
+        else:
+            self.get_logger().warn(f'Unknown dropper command: "{cmd}"')
+
     def _on_preflight(self, request, response):
         """Hard gate before any dive: do the live thruster params still match
         the known-good backup?
@@ -818,6 +923,7 @@ class ThrusterController(Node):
 
             self._last_cmd_time = self.get_clock().now()
             self._watchdog_triggered = False
+            self._watchdog_disarmed = False
         except Exception as e:
             self.get_logger().error(f'Movement callback error: {e} — stopping')
             self.stop()
@@ -908,16 +1014,27 @@ class ThrusterController(Node):
                 self.get_logger().info('Duration elapsed – stopping')
                 self.stop()
 
-        # ── Watchdog: auto-stop if no commands for a long time ──
-        if (self._last_cmd_time is not None
-                and not self._watchdog_triggered
-                and self.watchdog_timeout > 0):
+        # ── Watchdog: auto-stop if no commands for a long time, then disarm
+        # if the drought continues (F22: 30s of stale commands at competition
+        # speed was 10-15m of blind travel, and the old watchdog only ever
+        # neutralised axes — the vehicle stayed armed holding depth forever) ──
+        if self._last_cmd_time is not None:
             elapsed = (now - self._last_cmd_time).nanoseconds / 1e9
-            if elapsed > self.watchdog_timeout:
+            if (not self._watchdog_triggered
+                    and self.watchdog_timeout > 0
+                    and elapsed > self.watchdog_timeout):
                 self.get_logger().warn(
                     f'Watchdog: no command for {elapsed:.0f}s – stopping')
                 self.stop()
                 self._watchdog_triggered = True
+            if (self._watchdog_triggered
+                    and not self._watchdog_disarmed
+                    and self.disarm_watchdog_timeout > 0
+                    and elapsed > self.disarm_watchdog_timeout):
+                self.get_logger().warn(
+                    f'Watchdog: no command for {elapsed:.0f}s – disarming')
+                self._disarm_vehicle()
+                self._watchdog_disarmed = True
 
         if self.simulate:
             return

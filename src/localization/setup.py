@@ -27,7 +27,6 @@ setup(
             'depth_node = localization.depth_node:main',
             'localization_node = localization.localization_node:main',
             'drift_correction_node = localization.drift_correction_node:main',
-            'vslam_node = localization.vslam_node:main',
         ],
     },
 )

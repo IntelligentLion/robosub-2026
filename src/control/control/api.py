@@ -8,19 +8,23 @@ lives in motion_node and the pure controllers under it.
     from control.api import Auv
 
     with Auv() as auv:
-        auv.submerge_to_depth(target_depth=2.0, dive_speed=0.3)
+        auv.submerge_to_depth(target_depth=2.0)
         auv.move_forward(speed=0.4, duration=10)   # depth+heading+attitude held
         auv.stop()
 
 Speeds are normalized 0.0–1.0, matching MovementCommand. The original brief
 wrote raw MAVLink units (dive_speed=-300, speed=400); this uses the project's
 existing normalized convention rather than introducing a second one.
+    
+The descent rate lives on motion_node (`dive_speed`), not here — see
+submerge_to_depth.
 """
 import math
 import time
 
 import rclpy
 from rclpy.node import Node
+from geometry_msgs.msg import Vector3Stamped
 from std_msgs.msg import Float32, String
 
 from auv_msgs.msg import MovementCommand
@@ -44,17 +48,24 @@ class Auv:
         self._spin_period = 1.0 / float(spin_hz)
 
         self._state = ''
+        self._yaw = None                 # latest heading, radians, REP-103 CCW+
         self._cmd_pub = self._node.create_publisher(
             MovementCommand, 'motion/cmd', 10)
         self._submerge_pub = self._node.create_publisher(
             Float32, 'motion/submerge', 10)
         self._node.create_subscription(
             String, 'submerge/state', self._on_state, 10)
+        # Same source motion_node's heading lock watches — closed-loop turn().
+        self._node.create_subscription(
+            Vector3Stamped, 'imu/rpy', self._on_yaw, 10)
 
     # ─── plumbing ───────────────────────────────────────────────────
 
     def _on_state(self, msg: String):
         self._state = msg.data
+
+    def _on_yaw(self, msg: Vector3Stamped):
+        self._yaw = float(msg.vector.z)
 
     def _spin(self, seconds):
         """Pump callbacks for `seconds`, so state updates actually arrive."""
@@ -79,9 +90,14 @@ class Auv:
         """Latest submerge/state string ('hold', 'diving', 'failed: …')."""
         return self._state
 
-    def submerge_to_depth(self, target_depth, dive_speed=0.3, timeout=60.0):
+    def submerge_to_depth(self, target_depth, timeout=60.0):
         """Dive to `target_depth` metres and hold there. Blocks until the sub is
         at depth with ALT_HOLD confirmed and the heading captured.
+
+        The descent rate is motion_node's `dive_speed` parameter — it is the
+        node that runs DepthController, and a per-call rate here would have to
+        be silently ignored or race the running dive. Set it where it lives:
+        `ros2 param set /motion_node dive_speed 0.3`, or via the launch arg.
 
         Raises SubmergeError if the dive fails — a failed preflight, an ALT_HOLD
         the autopilot refuses (dead Bar02), a vehicle that never arms, or a dive
@@ -146,14 +162,56 @@ class Auv:
                 raise SubmergeError(self._state.split(':', 1)[-1].strip())
         self.stop()
 
-    def turn(self, yaw_rate, duration):
+    def turn(self, yaw_rate, duration=None, degrees=None):
         """Deliberately change heading. While yaw_rate is non-zero the heading
         lock stands down; when you stop, it re-captures the NEW heading and
-        holds that."""
-        deadline = time.monotonic() + float(duration)
-        while time.monotonic() < deadline:
-            self._publish_axes(yaw_rate=float(yaw_rate))
+        holds that.
+
+        Two ways to bound the turn:
+          • duration — spin for that many seconds (open-loop, original behaviour).
+          • degrees  — spin until the heading has actually moved this many
+            degrees (closed-loop off imu/rpy), then stop. `degrees` is a positive
+            magnitude; the sign of yaw_rate picks the direction. When degrees is
+            given, `duration` (default 60 s) is only a safety timeout.
+
+        Supply exactly one of duration / degrees.
+        """
+        yaw_rate = float(yaw_rate)
+        if degrees is None:
+            if duration is None:
+                raise ValueError('turn() needs either duration or degrees')
+            deadline = time.monotonic() + float(duration)
+            while time.monotonic() < deadline:
+                self._publish_axes(yaw_rate=yaw_rate)
+                self._spin(0.1)
+            self.stop()
+            return
+
+        if yaw_rate == 0.0:
+            raise ValueError('turn(degrees=...) needs a non-zero yaw_rate for direction')
+        target = math.radians(abs(float(degrees)))
+        timeout = 60.0 if duration is None else float(duration)
+
+        # Need a heading fix before we can measure how far we've come.
+        deadline = time.monotonic() + timeout
+        while self._yaw is None and time.monotonic() < deadline:
             self._spin(0.1)
+        if self._yaw is None:
+            self.stop()
+            raise SubmergeError('no heading on imu/rpy — cannot turn by degrees')
+
+        direction = 1.0 if yaw_rate > 0.0 else -1.0
+        prev = self._yaw
+        travelled = 0.0                  # progress toward target, radians
+        while travelled < target and time.monotonic() < deadline:
+            self._publish_axes(yaw_rate=yaw_rate)
+            self._spin(0.1)
+            # Unwrap each step so ±pi rollover doesn't reset progress, and count
+            # it in the commanded direction so sensor jitter cancels instead of
+            # inflating progress the way abs() would.
+            step = (self._yaw - prev + math.pi) % (2.0 * math.pi) - math.pi
+            prev = self._yaw
+            travelled += step * direction
         self.stop()
 
     def stop(self):

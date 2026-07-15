@@ -77,6 +77,25 @@ class HeadingLock:
         """Change forward speed mid-run WITHOUT re-locking the target."""
         self._base = float(speed)
 
+    def set_target(self, target_yaw):
+        """Command a NEW heading to hold, without re-capturing the current yaw.
+
+        This is a deliberate slew: unlike start() (which snaps the target to
+        wherever the sub is pointing now), this moves the target to an absolute
+        heading so the lock drives there. The PID is reset so the slew is a clean
+        step response — the auto-tuner relies on that. No-op unless currently
+        LOCKED/STALE_GRACE (a set_target on an idle or aborted lock would hold a
+        target nothing is driving toward)."""
+        if not math.isfinite(target_yaw):
+            raise ValueError('cannot set a non-finite heading target')
+        if self._state in (LockState.IDLE, LockState.ABORTED):
+            return
+        self._target = wrap(target_yaw)
+        self._pid.reset()
+        self._stale_since = None
+        self._last_error = 0.0
+        self._state = LockState.LOCKED
+
     def stop(self):
         """Release the lock; next start() captures a fresh target."""
         self._state = LockState.IDLE

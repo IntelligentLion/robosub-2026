@@ -39,7 +39,7 @@ BT::NodeStatus DetectOrangePath::tick() {
 BT::NodeStatus SearchSlalomPoles::tick() {
   RCLCPP_INFO(lg(), "[slalom] search slalom poles");
   return seen("slalom_pole", 0.4) ? BT::NodeStatus::SUCCESS
-                                  : BT::NodeStatus::SUCCESS;
+                                  : BT::NodeStatus::FAILURE;
 }
 BT::NodeStatus DetectPoleGroup::tick() {
   RCLCPP_INFO(lg(), "[slalom] detect pole group");
@@ -70,7 +70,7 @@ BT::NodeStatus DetectMagneticTarget::tick() {
   bool ok = seen("magnetic_target", 0.4);
   RCLCPP_INFO(lg(), "[bins] detect magnetic target: %s",
               ok ? "yes" : "no");
-  return ok ? BT::NodeStatus::SUCCESS : BT::NodeStatus::SUCCESS;
+  return ok ? BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
 }
 
 // ObserveMarker — stateful: wait up to 3s for "marker" detection, then SUCCESS.

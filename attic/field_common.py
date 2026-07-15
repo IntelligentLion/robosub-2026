@@ -383,13 +383,18 @@ class DetectionMonitor(Node):
     def __init__(self):
         super().__init__('field_test_detections')
         self._latest = {}        # label -> (ObjectDetection, monotonic_time)
+        self._latest_frame = {}  # label -> ([ObjectDetection, ...], monotonic_time)
         self.create_subscription(
             ObjectDetectionArray, 'vision/detections', self._on_dets, 10)
 
     def _on_dets(self, msg: ObjectDetectionArray):
         now = time.monotonic()
+        frame = {}
         for det in msg.detections:
             self._latest[det.label] = (det, now)
+            frame.setdefault(det.label, []).append(det)
+        for label, dets in frame.items():
+            self._latest_frame[label] = (dets, now)
 
     def best(self, label, min_conf=0.5, stale_s=1.0):
         """Freshest detection of `label` above conf, seen within stale_s — or None."""
@@ -405,6 +410,20 @@ class DetectionMonitor(Node):
 
     def seen(self, label, min_conf=0.5, stale_s=1.0):
         return self.best(label, min_conf, stale_s) is not None
+
+    def all(self, label, min_conf=0.5, stale_s=1.0):
+        """All detections of `label` from the last full frame that had one,
+        above conf, if that frame is still fresh — or []. Unlike best(),
+        which keeps only the single freshest detection per label, this
+        preserves multiple simultaneous instances of the same label (e.g.
+        slalom's single 'slalom' class covering all three pipes at once)."""
+        entry = self._latest_frame.get(label)
+        if entry is None:
+            return []
+        dets, t = entry
+        if time.monotonic() - t > stale_s:
+            return []
+        return [d for d in dets if d.confidence >= min_conf]
 
     def fresh(self, stale_s=1.0):
         """All labels seen within stale_s: sorted list of (label, conf)."""

@@ -18,11 +18,18 @@ inline rclcpp::Logger lg() { return rclcpp::get_logger("shrub"); }
 }  // namespace
 
 // ─── Markers ────────────────────────────────────────────────────────
+// F14/F17: wired to the real dropper.py driver via MissionIO::dropperCommand
+// (thruster_node owns the MAVLink link and does the actual DO_SET_SERVO).
+// Two markers are loaded, right side first: drop_right on the first call,
+// drop_left on the second, matching dropper.py's own bench-test sequence.
 BT::NodeStatus ReleaseMarker::tick() {
-  RCLCPP_INFO(lg(), "[manip] release marker (TODO: marker dropper driver)");
+  int remaining = 2;
+  if (auto bb = config().blackboard) bb->get<int>("markers_remaining", remaining);
+  const char* side = (remaining >= 2) ? "drop_right" : "drop_left";
+  RCLCPP_INFO(lg(), "[manip] release marker: %s (%d remaining before this drop)",
+              side, remaining);
+  MissionIO::get().dropperCommand(side);
   if (auto bb = config().blackboard) {
-    int remaining = 2;
-    bb->get<int>("markers_remaining", remaining);
     bb->set("markers_remaining", std::max(0, remaining - 1));
     bb->set("marker_dropped", true);
   }

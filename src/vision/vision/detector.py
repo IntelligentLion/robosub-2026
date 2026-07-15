@@ -819,6 +819,12 @@ def run_detector(node):
     parser.add_argument('--onnx', type=str, default=_DEFAULT_ONNX)
     parser.add_argument('--classes', type=str, default=None)
     parser.add_argument('--svo', type=str, default=None)
+    # FRONT camera ZED 2i serial. Pinning it means this node always opens the
+    # front camera even with the bottom ZED plugged in too (default sl.InputType
+    # grabs "first available", which races the bottom node for the same device).
+    # 0 = first available (single-camera bench use).
+    parser.add_argument('--serial', type=int, default=31166146,
+                        help='front ZED 2i serial number (0 = first available)')
     parser.add_argument('--img_size', type=int, default=416)
     parser.add_argument('--conf_thres', type=float, default=0.4)
     parser.add_argument('--device', type=str, default='cuda')
@@ -883,6 +889,11 @@ def run_detector(node):
     input_type = sl.InputType()
     if opt.svo:
         input_type.set_from_svo_file(opt.svo)
+    elif opt.serial > 0:
+        # Bind this session to the FRONT camera by serial so two ZED nodes never
+        # fight over one device.
+        input_type.set_from_serial_number(opt.serial)
+        print(f'[Vision] front camera pinned to ZED serial {opt.serial}')
 
     # Prioritise PERFORMANCE — NEURAL/ULTRA consistently OOM on Jetson Orin 8GB.
     # Keep them as lower-priority options for machines with more VRAM.

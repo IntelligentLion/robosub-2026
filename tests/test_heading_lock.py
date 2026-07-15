@@ -34,6 +34,38 @@ def test_idle_update_is_neutral():
     assert lock.update(0.5, now_s=0.0, dt_s=0.05) == (0.0, 0.0, LockState.IDLE)
 
 
+def test_set_target_slews_without_recapture():
+    # A deliberate slew (the auto-tuner's step): the target moves to the
+    # commanded ABSOLUTE heading, not to wherever the sub points now.
+    lock = make_lock(kp=1.0)
+    lock.start(0.0, base_speed=0.0)
+    lock.set_target(0.6)
+    assert lock.state is LockState.LOCKED
+    assert lock.target_yaw == pytest.approx(0.6)
+    # Sub still at 0.0 -> error = wrap(0 - 0.6) < 0 -> correction < 0 (drives
+    # toward the new target), and the target did NOT snap back to 0.0.
+    _, correction, state = lock.update(0.0, now_s=0.0, dt_s=0.05)
+    assert state is LockState.LOCKED
+    assert correction < 0.0
+    assert lock.target_yaw == pytest.approx(0.6)
+
+
+def test_set_target_wraps_and_rejects_nonfinite():
+    lock = make_lock()
+    lock.start(0.0, base_speed=0.0)
+    lock.set_target(math.radians(340))
+    assert lock.target_yaw == pytest.approx(math.radians(-20))
+    with pytest.raises(ValueError):
+        lock.set_target(float('nan'))
+
+
+def test_set_target_noop_when_idle():
+    # Nothing is driving toward a target on an idle lock -> stay IDLE.
+    lock = make_lock()
+    lock.set_target(1.0)
+    assert lock.state is LockState.IDLE
+
+
 def test_cw_drift_gets_ccw_correction():
     # REP-103: clockwise drift DECREASES yaw. Correction must be negative
     # (CCW on the CW-positive yaw_rate axis) -> mixer raises right pair.

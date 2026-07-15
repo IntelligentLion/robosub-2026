@@ -44,11 +44,15 @@ FLOAT_TOPICS = ('heading/current', 'heading/target', 'heading/error',
                 'motion/forward_cmd', 'motion/vertical_cmd')
 
 ARROW_LEN = 1.0            # m — heading arrows
+CMD_ARROW_LEN = 1.5        # m at full (1.0) command — correction vectors
 ESTIMATE_RGBA = (1.0, 0.55, 0.0, 1.0)     # orange: dead-reckoned, drifting
 MEASURED_RGBA = (0.1, 0.9, 0.3, 1.0)      # green: a real position sensor
 CURRENT_RGBA = (0.2, 0.6, 1.0, 1.0)       # blue: where we point
 DESIRED_RGBA = (1.0, 0.9, 0.1, 1.0)       # yellow: where we want to point
 ERROR_RGBA = (1.0, 0.2, 0.2, 0.9)         # red: the gap between them
+FORWARD_RGBA = (0.2, 1.0, 0.4, 0.9)       # green: commanded surge
+CORRECTION_RGBA = (1.0, 0.3, 0.9, 0.9)    # magenta: heading lock's yaw output
+HEAVE_RGBA = (0.4, 0.8, 1.0, 0.9)         # cyan: dive command (+down)
 
 
 def _quat_z(yaw):
@@ -264,6 +268,43 @@ class RvizVisualizer(Node):
             plane.pose.position.y = float(y)
             plane.pose.position.z = float(tgt_depth)
             arr.markers.append(plane)
+
+        # ── controller correction vectors: what the controllers are ASKING for,
+        # drawn where they act. Length is proportional to the command, so a
+        # zero command draws nothing (an arrow with zero length is invalid in
+        # RViz and would be dropped with a warning anyway).
+        surge = _or0(self._v('motion/forward_cmd'))
+        if abs(surge) > 1e-3 and not math.isnan(cur):
+            # Along the CURRENT heading — that is the direction the surge
+            # actually pushes, whatever we wish the heading were.
+            a = base(7, Marker.ARROW, FORWARD_RGBA, (0.05, 0.10, 0.0))
+            a.points = [origin,
+                        _ahead(origin, cur, CMD_ARROW_LEN * surge)]
+            arr.markers.append(a)
+
+        yaw_corr = _or0(self._v('heading/yaw_correction'))
+        if abs(yaw_corr) > 1e-3 and not math.isnan(cur):
+            # Broadside to the heading: +yaw_rate is CCW (REP-103), so it pushes
+            # the nose to port. Draws the correction the heading lock is
+            # applying, not the error it is applying it to (that is the arc).
+            a = base(8, Marker.ARROW, CORRECTION_RGBA, (0.05, 0.10, 0.0))
+            a.points = [_ahead(origin, cur, ARROW_LEN),
+                        _ahead(_ahead(origin, cur, ARROW_LEN),
+                               cur + math.pi / 2.0,
+                               CMD_ARROW_LEN * yaw_corr)]
+            arr.markers.append(a)
+
+        heave = _or0(self._v('motion/vertical_cmd'))
+        if abs(heave) > 1e-3:
+            # +heave is DOWN (depth is +down): the dive command, visible only
+            # while DepthController still owns the axis. Once ALT_HOLD takes
+            # over at HOLD this goes to 0 and the arrow disappears — which is
+            # itself the thing you want to see.
+            a = base(9, Marker.ARROW, HEAVE_RGBA, (0.05, 0.10, 0.0))
+            tip = Point(x=origin.x, y=origin.y,
+                        z=origin.z + CMD_ARROW_LEN * heave)
+            a.points = [origin, tip]
+            arr.markers.append(a)
 
         if self._waypoint is not None:
             wp = base(5, Marker.SPHERE, (1.0, 0.3, 1.0, 0.9), (0.3, 0.3, 0.3))

@@ -127,6 +127,40 @@ def test_forward_is_the_only_axis_the_operator_supplies():
     node.destroy_node()
 
 
+# ── operator turn: re-lock on the NEW heading ─────────────────────────
+
+def test_turn_then_release_holds_the_new_heading_not_the_old_one():
+    # The veer/oscillation report: after a deliberate turn the lock was still
+    # holding the PRE-turn heading, so on release it drove the nose back —
+    # overshoot, then left/right swing. A released turn must hold where the
+    # turn ended, not drag back to where it started.
+    clock = FakeClock()
+    node = make_node(clock)
+    dive_to_hold(node, clock)                       # target captured at 0.7 rad
+
+    # Operator turns: yaw climbs 0.7 -> ~2.27 rad (~90 deg CCW).
+    operator(node, yaw_rate=0.5)
+    yaw = 0.7
+    for _ in range(10):
+        yaw += 0.157
+        t = clock.advance(0.05)
+        feed_yaw(node, yaw, t)
+        feed_depth(node, 2.0, t)
+        node._tick()
+
+    # Operator releases the turn. The lock must now hold the NEW heading.
+    operator(node, yaw_rate=0.0)
+    t = clock.advance(0.05)
+    feed_yaw(node, yaw, t)
+    feed_depth(node, 2.0, t)
+    node._tick()
+
+    assert node._heading.target_yaw == pytest.approx(yaw, abs=0.2)
+    # No yank back toward the old 0.7 rad heading.
+    assert abs(last_cmd(node).yaw_rate) < 0.05
+    node.destroy_node()
+
+
 def test_heave_stays_zero_in_hold_so_alt_hold_keeps_owning_depth():
     clock = FakeClock()
     node = make_node(clock)

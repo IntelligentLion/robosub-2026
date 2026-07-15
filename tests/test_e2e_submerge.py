@@ -140,7 +140,7 @@ def rig(request):
 
 def test_submerge_reaches_depth_and_enters_alt_hold(rig):
     r = rig()
-    r.auv.submerge_to_depth(target_depth=2.0, dive_speed=0.5, timeout=30.0)
+    r.auv.submerge_to_depth(target_depth=2.0, timeout=30.0)
 
     assert r.auv.state == 'hold'
     assert r.vehicle.mode == 'ALT_HOLD'
@@ -149,7 +149,7 @@ def test_submerge_reaches_depth_and_enters_alt_hold(rig):
 
 def test_heave_is_released_once_at_depth_so_alt_hold_owns_it(rig):
     r = rig()
-    r.auv.submerge_to_depth(target_depth=2.0, dive_speed=0.5, timeout=30.0)
+    r.auv.submerge_to_depth(target_depth=2.0, timeout=30.0)
     r.auv._spin(0.5)
     assert r.vehicle.cmd.heave == 0.0
 
@@ -158,7 +158,7 @@ def test_forward_motion_holds_the_captured_heading(rig):
     # The whole point. The fake vehicle veers right whenever it drives forward;
     # with the lock closed, the heading must stay put anyway.
     r = rig()
-    r.auv.submerge_to_depth(target_depth=2.0, dive_speed=0.5, timeout=30.0)
+    r.auv.submerge_to_depth(target_depth=2.0, timeout=30.0)
     captured = r.vehicle.yaw
 
     r.auv.move_forward(speed=0.4, duration=6.0)
@@ -189,12 +189,12 @@ def test_refused_alt_hold_aborts_the_dive_on_the_surface(rig):
     # A dead Bar02: ArduSub refuses ALT_HOLD. We must fail without descending.
     r = rig(mode_ok=False)
     with pytest.raises(SubmergeError, match='Depth sensor is not connected'):
-        r.auv.submerge_to_depth(target_depth=2.0, dive_speed=0.5, timeout=20.0)
+        r.auv.submerge_to_depth(target_depth=2.0, timeout=20.0)
     assert r.vehicle.depth == 0.0, 'descended despite having no depth hold'
 
 
 def test_failed_preflight_aborts_the_dive_on_the_surface(rig):
     r = rig(preflight_ok=False)
     with pytest.raises(SubmergeError, match='MOT_3_DIRECTION'):
-        r.auv.submerge_to_depth(target_depth=2.0, dive_speed=0.5, timeout=20.0)
+        r.auv.submerge_to_depth(target_depth=2.0, timeout=20.0)
     assert r.vehicle.depth == 0.0

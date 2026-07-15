@@ -172,12 +172,22 @@ def run_bottom_camera(node: BottomCameraNode):
     parser = argparse.ArgumentParser()
     parser.add_argument('--weights', type=str, default=_DEFAULT_ONNX)
     parser.add_argument('--onnx', type=str, default=_DEFAULT_ONNX)
-    parser.add_argument('--serial', type=int, default=0,
-                        help='ZED serial number (0 = auto-detect second camera)')
+    # BOTTOM camera ZED 2i serial. Pinned so it never opens the front camera.
+    # 0 = first available (single-camera bench use).
+    parser.add_argument('--serial', type=int, default=30758628,
+                        help='bottom ZED 2i serial number (0 = first available)')
     parser.add_argument('--img_size', type=int, default=416)
     parser.add_argument('--conf_thres', type=float, default=0.4)
     parser.add_argument('--device', type=str, default='cuda')
     parser.add_argument('--zed_fps', type=int, default=30)
+    # 2D-only: skip depth, positional tracking (VIO odom/bottom) and the ZED
+    # object-detection 3D pass. Path markers only need 2D boxes, and dropping
+    # the ZED depth engine roughly HALVES this camera's GPU + compute — the
+    # setting to use when the front camera is also running on the same Jetson.
+    # odom/bottom and depth-enriched marker distances are unavailable in this
+    # mode (path markers still publish, with depth_m = -1).
+    parser.add_argument('--twod_only', action='store_true',
+                        help='2D-only: no depth/VIO/3D — lean for dual-camera runs')
     opt, _ = parser.parse_known_args(sys.argv[1:])
 
     print('[BottomCam] Initializing model (before camera to avoid GPU OOM)...')
@@ -208,12 +218,21 @@ def run_bottom_camera(node: BottomCameraNode):
     positional_tracking_enabled = False
     object_detection_enabled = False
 
-    init_candidates = [
-        (sl.RESOLUTION.HD720, sl.DEPTH_MODE.PERFORMANCE, opt.zed_fps),
-        (sl.RESOLUTION.VGA,   sl.DEPTH_MODE.PERFORMANCE, opt.zed_fps),
-        (sl.RESOLUTION.VGA,   sl.DEPTH_MODE.PERFORMANCE, 15),
-        (sl.RESOLUTION.VGA,   sl.DEPTH_MODE.NONE,        opt.zed_fps),
-    ]
+    if opt.twod_only:
+        # No depth engine at all — VGA left image straight to inference.
+        init_candidates = [
+            (sl.RESOLUTION.VGA,   sl.DEPTH_MODE.NONE, opt.zed_fps),
+            (sl.RESOLUTION.VGA,   sl.DEPTH_MODE.NONE, 15),
+            (sl.RESOLUTION.HD720, sl.DEPTH_MODE.NONE, opt.zed_fps),
+        ]
+        print('[BottomCam] 2D-only mode — depth/VIO/3D disabled (lean)')
+    else:
+        init_candidates = [
+            (sl.RESOLUTION.HD720, sl.DEPTH_MODE.PERFORMANCE, opt.zed_fps),
+            (sl.RESOLUTION.VGA,   sl.DEPTH_MODE.PERFORMANCE, opt.zed_fps),
+            (sl.RESOLUTION.VGA,   sl.DEPTH_MODE.PERFORMANCE, 15),
+            (sl.RESOLUTION.VGA,   sl.DEPTH_MODE.NONE,        opt.zed_fps),
+        ]
 
     runtime_params = sl.RuntimeParameters()
     runtime_params.enable_fill_mode = False

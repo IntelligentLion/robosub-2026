@@ -69,7 +69,12 @@ DEBUG_TOPICS = ('heading/current', 'heading/target', 'heading/error',
 # a default lives in exactly one place and cannot drift between the declaration,
 # the initial read, and the live-tune path.
 PARAM_DEFAULTS = {
-    'target_depth': 2.0, 'dive_speed': 0.3, 'forward_speed': 0.4,
+    # No 'forward_speed' here: surge is the OPERATOR's axis, and it arrives on
+    # motion/cmd. A default surge parameter on this node would be read by
+    # nothing, and reads like an autostart that does not exist. The mission's
+    # forward speed lives on forward_hold_mission; the safety clamp on it is
+    # max_forward_speed, below.
+    'target_depth': 2.0, 'dive_speed': 0.3,
     'depth_tolerance_m': 0.15, 'min_heave': 0.12, 'depth_timeout': 30.0,
     'phase_timeout_s': 15.0,
     'heading_kp': 1.2, 'heading_ki': 0.0, 'heading_kd': 0.3, 'i_limit': 0.3,
@@ -115,7 +120,6 @@ RESTART_ONLY_PARAMS = ('control_rate_hz', 'yaw_topic')
 PARAM_BOUNDS = {
     'target_depth':          (0.0, 30.0,     False, True),
     'dive_speed':            (0.0, 1.0,      False, True),
-    'forward_speed':         (0.0, 1.0,      True,  True),
     'depth_tolerance_m':     (0.0, 1.0,      False, True),
     'min_heave':             (0.0, 1.0,      False, True),
     'depth_timeout':         (0.0, 300.0,    False, True),
@@ -274,6 +278,8 @@ class MotionNode(Node):
             MovementCommand, 'motion/cmd', self._on_cmd, 10)
         self.create_subscription(
             Float32, 'motion/submerge', self._on_submerge, 10)
+        self.create_subscription(
+            Float32, 'motion/heading', self._on_heading, 10)
 
         self._preflight_cli = self.create_client(Trigger, 'pixhawk/preflight')
         self._mode_cli = self.create_client(SetFlightMode, 'pixhawk/set_mode')
@@ -356,6 +362,32 @@ class MotionNode(Node):
         # yaw_rate == 0 means "not steering, let the lock hold"; anything else is
         # a deliberate heading change and overrides the lock while it persists.
         self._op_yaw = float(msg.yaw_rate) if msg.yaw_rate != 0.0 else None
+
+    def _on_heading(self, msg: Float32):
+        """Command an ABSOLUTE heading (rad, REP-103 CCW+) for the lock to slew
+        to and hold. Only honoured while HOLDING — a heading command mid-dive
+        would fight the sequencing, and one while idle drives nothing. This is
+        the deliberate-slew path the auto-tuner uses for a clean step response;
+        operator yaw_rate on motion/cmd still overrides it while active."""
+        target = float(msg.data)
+        if not math.isfinite(target):
+            self.get_logger().warn('motion/heading non-finite — ignored')
+            return
+        if self._inhibited:
+            self.get_logger().warn(
+                'motion/heading ignored — another movement_command publisher '
+                'is active')
+            return
+        if self._submerge.state is not SubmergeState.HOLD:
+            self.get_logger().warn(
+                f'motion/heading ignored — not HOLDING (state '
+                f'{self._submerge.state.value})')
+            return
+        # Drop any operator-yaw override so the PID actually drives to the new
+        # target instead of the mixer re-capturing current heading each tick.
+        self._op_yaw = None
+        self._heading.set_target(target)
+        self.get_logger().info(f'heading target → {target:.3f} rad')
 
     def _on_submerge(self, msg: Float32):
         target = float(msg.data)
@@ -517,8 +549,18 @@ class MotionNode(Node):
                 self._abort('yaw source degraded (duty-cycle abort)')
                 return
 
-            self._heading.set_base_speed(self._op_surge)
-            _, yaw_correction, lock_state = self._heading.update(yaw, now, dt)
+            if self._op_yaw is not None and yaw is not None:
+                # Operator is deliberately turning. The mixer routes yaw from
+                # operator_yaw while they steer; keep the lock CAPTURED on the
+                # current heading every tick so that when they release, it holds
+                # the NEW heading. Without this the target stays where it was
+                # captured at dive time, and release drives the nose back to the
+                # pre-turn heading — the overshoot-then-oscillate symptom.
+                self._heading.start(yaw, base_speed=self._op_surge)
+                yaw_correction, lock_state = 0.0, LockState.LOCKED
+            else:
+                self._heading.set_base_speed(self._op_surge)
+                _, yaw_correction, lock_state = self._heading.update(yaw, now, dt)
 
             if lock_state is LockState.ABORTED:
                 self.get_logger().error(

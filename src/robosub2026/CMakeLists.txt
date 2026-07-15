@@ -15,6 +15,7 @@ find_package(std_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(auv_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
 
 set(DEPS
   rclcpp
@@ -25,6 +26,7 @@ set(DEPS
   geometry_msgs
   sensor_msgs
   auv_msgs
+  std_srvs
 )
 
 # --- Shared library of all custom BT nodes ---

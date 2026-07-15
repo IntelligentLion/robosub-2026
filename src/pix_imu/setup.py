@@ -1,9 +1,8 @@
 import os
 from glob import glob
-
 from setuptools import find_packages, setup
 
-package_name = 'control'
+package_name = 'pix_imu'
 
 setup(
     name=package_name,
@@ -15,21 +14,19 @@ setup(
         ('share/' + package_name, ['package.xml']),
         (os.path.join('share', package_name, 'launch'),
             glob('launch/*.launch.py')),
-        (os.path.join('share', package_name, 'rviz'), glob('rviz/*.rviz')),
+        (os.path.join('share', package_name, 'rviz'),
+            glob('rviz/*.rviz')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
     maintainer='robosub',
     maintainer_email='robosub@robosub.com',
-    description='Autonomous navigation controller for RoboSub AUV',
+    description='Pixhawk (ArduSub) IMU orientation visualization for RViz.',
     license='TODO: License declaration',
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'autonomous_controller = control.autonomous_controller:main',
-            'motion_node = control.motion_node:main',
-            'forward_hold_mission = control.forward_hold_mission:main',
-            'rviz_visualizer = control.rviz_visualizer:main',
+            'pixhawk_imu_bridge = pix_imu.pixhawk_imu_bridge:main',
         ],
     },
 )

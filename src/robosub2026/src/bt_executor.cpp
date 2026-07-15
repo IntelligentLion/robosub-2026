@@ -92,14 +92,18 @@ int main(int argc, char** argv) {
   bb->set("gate_cleared", false);
   bb->set("plane_crossed", true);
   bb->set("inside_bounds", true);
-  bb->set("vehicle_stable", true);
-  bb->set("orientation_reached", true);
-  bb->set("divider_verified", true);
-  bb->set("marker_in_bin", true);
-  bb->set("light_off", true);
-  bb->set("aligned", true);
-  bb->set("torpedo_hit", true);
-  bb->set("correct_basket", true);
+  // F14: these were seeded true, so any stub/branch that never touches them
+  // silently read as "already done" — the tree could report Mission SUCCESS
+  // having dropped nothing and fired nothing. Seed honest/false; only real
+  // perception or a real actuator result may flip them.
+  bb->set("vehicle_stable", false);
+  bb->set("orientation_reached", false);
+  bb->set("divider_verified", false);
+  bb->set("marker_in_bin", false);
+  bb->set("light_off", false);
+  bb->set("aligned", false);
+  bb->set("torpedo_hit", false);
+  bb->set("correct_basket", false);
   bb->set("object_delivered", false);
   bb->set("mission_complete", false);
   bb->set("depth_unstable", false);
@@ -131,15 +135,19 @@ int main(int argc, char** argv) {
         std::chrono::steady_clock::now().time_since_epoch()).count() - start_time;
     if (elapsed >= MISSION_TIMEOUT_S) {
       RCLCPP_WARN(ros_node->get_logger(),
-                  "MISSION TIMEOUT (%.0fs) — halting tree", elapsed);
+                  "MISSION TIMEOUT (%.0fs) — halting tree, surfacing + disarming",
+                  elapsed);
       tree.haltTree();
+      shrub::MissionIO::get().surfaceAndDisarm();
       status = BT::NodeStatus::SUCCESS;
       break;
     }
     if (++tick_count >= MAX_TICKS) {
       RCLCPP_WARN(ros_node->get_logger(),
-                  "Max tick count (%d) reached — halting tree", MAX_TICKS);
+                  "Max tick count (%d) reached — halting tree, surfacing + disarming",
+                  MAX_TICKS);
       tree.haltTree();
+      shrub::MissionIO::get().surfaceAndDisarm();
       status = BT::NodeStatus::FAILURE;
       break;
     }
@@ -172,8 +180,10 @@ int main(int argc, char** argv) {
     try {
       status = tree.tickOnce();
     } catch (const std::exception& e) {
-      RCLCPP_ERROR(ros_node->get_logger(), "BT tick exception: %s", e.what());
+      RCLCPP_ERROR(ros_node->get_logger(),
+                   "BT tick exception: %s — surfacing + disarming", e.what());
       tree.haltTree();
+      shrub::MissionIO::get().surfaceAndDisarm();
       status = BT::NodeStatus::FAILURE;
       break;
     }

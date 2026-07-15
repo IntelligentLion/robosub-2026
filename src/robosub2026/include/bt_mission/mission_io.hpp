@@ -16,11 +16,6 @@
 // It is a process-wide singleton created once in bt_executor from the executor's
 // rclcpp::Node, then used by every node via MissionIO::get().
 //
-// NOTE: This file (and the nodes that use it) has NOT been compiled in this
-// workspace — it must be verified with `colcon build --packages-select bt_mission`
-// on the Jetson before relying on it. The message field names match
-// src/auv_msgs/msg/*.msg as of this writing.
-
 #include <rclcpp/rclcpp.hpp>
 #include <auv_msgs/msg/movement_command.hpp>
 #include <auv_msgs/msg/navigation_command.hpp>
@@ -29,6 +24,8 @@
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/float32.hpp>
+#include <std_msgs/msg/string.hpp>
+#include <std_srvs/srv/trigger.hpp>
 
 #include <limits>
 #include <memory>
@@ -66,6 +63,19 @@ public:
                double target_yaw = 0.0,
                double target_x = 0.0, double target_y = 0.0, double target_z = 0.0);
   void stop();  // convenience: sendMovement("stop")
+  // Call thruster_node's pixhawk/disarm service directly.
+  void disarm();
+  // Surface-then-disarm epilogue (F11): emerge for a few seconds, then
+  // disarm, so the vehicle doesn't stay armed at depth after mission
+  // timeout / an unhandled tick exception / max ticks. Blocks the caller
+  // (spins the node itself) — only call from the executor's own exit path,
+  // never from inside a BT node tick.
+  void surfaceAndDisarm(double emerge_speed = 0.4, double emerge_s = 5.0);
+
+  // Dropper (F14/F17): "prepare" | "drop_right" | "drop_left" | "reset".
+  // Fire-and-forget over dropper_command, same convention as sendMovement —
+  // thruster_node owns the single MAVLink link and does the real work.
+  void dropperCommand(const std::string& cmd);
 
   // ── Cached sensor reads (thread-safe) ──
   double depth() const;                                   // metres, <0 if unknown
@@ -93,11 +103,13 @@ private:
   rclcpp::Node::SharedPtr node_;
   rclcpp::Publisher<auv_msgs::msg::MovementCommand>::SharedPtr move_pub_;
   rclcpp::Publisher<auv_msgs::msg::NavigationCommand>::SharedPtr nav_pub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr dropper_pub_;
   rclcpp::Subscription<auv_msgs::msg::ObjectDetectionArray>::SharedPtr det_sub_;
   rclcpp::Subscription<auv_msgs::msg::DepthInfo>::SharedPtr depth_sub_;
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr pose_sub_;
   rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr battery_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr leak_sub_;
+  rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr disarm_client_;
 
   mutable std::mutex mtx_;
   double depth_m_{-1.0};
